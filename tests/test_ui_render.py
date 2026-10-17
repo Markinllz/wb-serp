@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import importlib.util
 import sys
 
@@ -40,6 +40,7 @@ class FakeStreamlit(ModuleType):
         self.exports = []
         self.messages = []
         self.session_state = {}
+        self.column_config = SimpleNamespace(NumberColumn=lambda **kw: kw, TextColumn=lambda **kw: kw)
     def set_page_config(self, **kwargs): self.page_config = kwargs
     def markdown(self, *args, **kwargs): pass
     def error(self, msg): self.messages.append(("error",msg))
@@ -49,8 +50,10 @@ class FakeStreamlit(ModuleType):
     def caption(self, *args, **kwargs): pass
     def divider(self): pass
     def columns(self, num): return [Context() for _ in range(num)]
+    def container(self, **kwargs): return Context()
+    def expander(self, *args, **kwargs): return Context()
     def tabs(self, names): return [Context() for _ in names]
-    def metric(self, **kwargs): pass
+    def metric(self, *args, **kwargs): pass
     def selectbox(self, *args, options, **kwargs): return options[0]
     def date_input(self, name, *, value, **kwargs): return value
     def button(self, *args, **kwargs): return False
@@ -131,4 +134,28 @@ def test_dashboard_complete_read_only_flow_with_chart_and_two_csv_exports(tmp_pa
     assert len(st.frames) >= 3
     assert list(st.frames[0]["Артикул"]) == [12, 13]
     assert (st.frames[0]["Цена, ₽"] == 100.99).all()
-    assert len(st.frames[-1]) == 2
+    assert len(st.frames[1]) == 2  # monitor includes both configured phrases
+
+
+def test_partial_snapshot_is_selectable_exported_and_marked(tmp_path, monkeypatch):
+    from dataclasses import replace
+    app, st = load_dashboard(monkeypatch)
+    cfg = replace(config.Settings.from_env(), database_path=tmp_path / "partial.sqlite", top_n=200)
+    storage = Store(cfg.database_path)
+    storage.initialize()
+    storage.sync_queries(["короткая выдача"])
+    qid = storage.enabled_queries()[0]["id"]
+    now = datetime.now(timezone.utc)
+    storage.start_run(run_id="short", query_id=qid, scheduled_for=now.isoformat(),
+                      started_at=now, requested_top_n=200, destination=cfg.destination)
+    storage.complete_run(run_id="short", status="partial", finished_at=now,
+                         products=[Product(77, 1, None, None, None, None, None, "Товар")])
+    monkeypatch.setattr(app.Settings, "from_env", lambda: cfg)
+    app.main()
+    assert st.session_state[f"chosen_products_{qid}"] == [77]
+    assert list(st.plots[0].data[0].y) == [1]
+    assert list(st.plots[0].data[0].marker.symbol) == ["diamond-open"]
+    assert ("warning", "Неполный сбор: 1 из 200 товаров.") in st.messages
+    assert list(st.frames[0]["Артикул"]) == [77]
+    assert list(st.frames[0]["Статус"]) == ["Неполный"]
+    assert len(st.exports) == 2

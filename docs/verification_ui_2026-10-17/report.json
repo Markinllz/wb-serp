@@ -1,0 +1,343 @@
+{
+  "started_at": "2026-10-17T00:58:39.391081+00:00",
+  "query": "постельное белье 2 спальное",
+  "snapshot_rows": 200,
+  "historical_product_absent_from_latest": 25633520,
+  "historical_product_trace": {
+    "positions": [
+      7,
+      7,
+      null
+    ],
+    "connectgaps": false
+  },
+  "history_rows": 12,
+  "history_gaps": 1,
+  "invalid_period_filter": "PASS",
+  "empty_period_filter": "PASS",
+  "partial_visible": {
+    "query": "постельное белье евро вареный хлопок dr. hygge",
+    "count": 106,
+    "selectable": 116,
+    "markers": [
+      "diamond-open",
+      "diamond-open",
+      "diamond-open",
+      "diamond-open",
+      "diamond-open",
+      "diamond-open",
+      "diamond-open",
+      "diamond-open",
+      "diamond-open"
+    ]
+  },
+  "query_navigation": [
+    {
+      "query_id": 1,
+      "rows": 200
+    },
+    {
+      "query_id": 2,
+      "rows": 200
+    },
+    {
+      "query_id": 3,
+      "rows": 200
+    },
+    {
+      "query_id": 4,
+      "rows": 200
+    },
+    {
+      "query_id": 5,
+      "rows": 200
+    },
+    {
+      "query_id": 6,
+      "rows": 200
+    },
+    {
+      "query_id": 7,
+      "rows": 200
+    },
+    {
+      "query_id": 8,
+      "rows": 200
+    },
+    {
+      "query_id": 9,
+      "rows": 200
+    },
+    {
+      "query_id": 10,
+      "rows": 200
+    },
+    {
+      "query_id": 11,
+      "rows": 200
+    },
+    {
+      "query_id": 12,
+      "rows": 200
+    },
+    {
+      "query_id": 13,
+      "rows": 200
+    },
+    {
+      "query_id": 14,
+      "rows": 200
+    },
+    {
+      "query_id": 15,
+      "rows": 200
+    },
+    {
+      "query_id": 16,
+      "rows": 200
+    },
+    {
+      "query_id": 17,
+      "rows": 200
+    },
+    {
+      "query_id": 18,
+      "rows": 200
+    },
+    {
+      "query_id": 19,
+      "rows": 106
+    },
+    {
+      "query_id": 20,
+      "rows": 200
+    },
+    {
+      "query_id": 21,
+      "rows": 200
+    },
+    {
+      "query_id": 22,
+      "rows": 200
+    },
+    {
+      "query_id": 23,
+      "rows": 200
+    },
+    {
+      "query_id": 24,
+      "rows": 200
+    },
+    {
+      "query_id": 25,
+      "rows": 200
+    },
+    {
+      "query_id": 26,
+      "rows": 200
+    },
+    {
+      "query_id": 27,
+      "rows": 200
+    },
+    {
+      "query_id": 28,
+      "rows": 200
+    },
+    {
+      "query_id": 29,
+      "rows": 200
+    },
+    {
+      "query_id": 30,
+      "rows": 200
+    },
+    {
+      "query_id": 31,
+      "rows": 200
+    },
+    {
+      "query_id": 32,
+      "rows": 200
+    },
+    {
+      "query_id": 33,
+      "rows": 200
+    },
+    {
+      "query_id": 34,
+      "rows": 200
+    },
+    {
+      "query_id": 35,
+      "rows": 200
+    },
+    {
+      "query_id": 36,
+      "rows": 200
+    },
+    {
+      "query_id": 37,
+      "rows": 200
+    },
+    {
+      "query_id": 38,
+      "rows": 200
+    },
+    {
+      "query_id": 39,
+      "rows": 200
+    },
+    {
+      "query_id": 40,
+      "rows": 200
+    },
+    {
+      "query_id": 41,
+      "rows": 200
+    },
+    {
+      "query_id": 42,
+      "rows": 200
+    },
+    {
+      "query_id": 43,
+      "rows": 200
+    },
+    {
+      "query_id": 44,
+      "rows": 200
+    },
+    {
+      "query_id": 45,
+      "rows": 200
+    },
+    {
+      "query_id": 46,
+      "rows": 200
+    },
+    {
+      "query_id": 47,
+      "rows": 200
+    },
+    {
+      "query_id": 48,
+      "rows": 200
+    },
+    {
+      "query_id": 49,
+      "rows": 200
+    },
+    {
+      "query_id": 50,
+      "rows": 200
+    },
+    {
+      "query_id": 51,
+      "rows": 200
+    },
+    {
+      "query_id": 52,
+      "rows": 200
+    },
+    {
+      "query_id": 53,
+      "rows": 200
+    },
+    {
+      "query_id": 54,
+      "rows": 200
+    },
+    {
+      "query_id": 55,
+      "rows": 200
+    },
+    {
+      "query_id": 56,
+      "rows": 200
+    },
+    {
+      "query_id": 57,
+      "rows": 200
+    },
+    {
+      "query_id": 58,
+      "rows": 200
+    },
+    {
+      "query_id": 59,
+      "rows": 200
+    },
+    {
+      "query_id": 60,
+      "rows": 200
+    },
+    {
+      "query_id": 61,
+      "rows": 200
+    },
+    {
+      "query_id": 62,
+      "rows": 200
+    },
+    {
+      "query_id": 63,
+      "rows": 200
+    },
+    {
+      "query_id": 64,
+      "rows": 200
+    },
+    {
+      "query_id": 65,
+      "rows": 200
+    },
+    {
+      "query_id": 66,
+      "rows": 200
+    },
+    {
+      "query_id": 67,
+      "rows": 200
+    },
+    {
+      "query_id": 68,
+      "rows": 200
+    },
+    {
+      "query_id": 69,
+      "rows": 200
+    },
+    {
+      "query_id": 70,
+      "rows": 200
+    }
+  ],
+  "refresh": "PASS",
+  "status": "PASS",
+  "graph": {
+    "range": [
+      5.316865417376491,
+      0.6831345826235093
+    ],
+    "curves": 3,
+    "gaps": [
+      false,
+      false,
+      false
+    ]
+  },
+  "database_before": {
+    "collection_runs": 154,
+    "observations": 29187,
+    "product_catalog": 16395
+  },
+  "database_after": {
+    "collection_runs": 154,
+    "observations": 29187,
+    "product_catalog": 16395
+  },
+  "external_requests": [],
+  "javascript_errors": [],
+  "completed_at": "2026-10-17T00:58:54.440311+00:00"
+}

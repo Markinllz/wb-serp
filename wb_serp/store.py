@@ -1,7 +1,8 @@
 """SQLite persistence and read models.
 
 One collector is the sole writer; the web UI makes short-lived read queries.
-A run is never overwritten. Partial/failed runs are excluded from rank analytics.
+A run is never overwritten. Partial snapshots retain observed ranks; failed runs
+are diagnostic only. Missing ranks in partial snapshots do not prove absence.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from typing import Iterator, Sequence
 
 from wb_serp.models import Product, RunStatus
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def iso(value: datetime) -> str:
@@ -63,7 +64,7 @@ class Store:
             if version == SCHEMA_VERSION:
                 self._assert_schema(db)
                 return
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise RuntimeError(f"Unsupported schema migration from {version}")
             if version == 0:
                 db.executescript("""
@@ -124,6 +125,30 @@ class Store:
                     key TEXT PRIMARY KEY, value TEXT NOT NULL
                 )""")
             self._assert_schema(db)
+            if version < 3:
+                # Version 2 omitted valid short catalogs from product selection.
+                # Backfill the index only; never alter observations or run status.
+                db.execute("""INSERT INTO product_catalog
+                    (query_id, nm_id, first_seen, last_seen, last_title, last_seller)
+                    SELECT query_id, nm_id, first_seen, started_at, title, seller
+                    FROM (
+                        SELECT r.query_id, o.nm_id, r.started_at, o.title, o.seller,
+                            min(r.started_at) OVER (
+                                PARTITION BY r.query_id, o.nm_id) AS first_seen,
+                            row_number() OVER (PARTITION BY r.query_id, o.nm_id
+                                ORDER BY r.started_at DESC, r.rowid DESC) AS latest
+                        FROM observations o JOIN collection_runs r ON r.id=o.run_id
+                        WHERE r.status='partial'
+                    ) WHERE latest=1
+                    ON CONFLICT(query_id, nm_id) DO UPDATE SET
+                        first_seen=min(product_catalog.first_seen, excluded.first_seen),
+                        last_seen=max(product_catalog.last_seen, excluded.last_seen),
+                        last_title=CASE WHEN excluded.last_seen >= product_catalog.last_seen
+                            THEN COALESCE(excluded.last_title, product_catalog.last_title)
+                            ELSE product_catalog.last_title END,
+                        last_seller=CASE WHEN excluded.last_seen >= product_catalog.last_seen
+                            THEN COALESCE(excluded.last_seller, product_catalog.last_seller)
+                            ELSE product_catalog.last_seller END""")
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @staticmethod
@@ -199,10 +224,11 @@ class Store:
                            (str(destination),))
             elif int(fixed_destination["value"]) != destination:
                 # Early configuration mistakes must remain repairable if the
-                # source has NEVER yielded a successful snapshot. Failed
+                # source has NEVER yielded a usable snapshot. Failed
                 # attempts still retain their original per-run destination.
                 confirmed = db.execute(
-                    "SELECT EXISTS(SELECT 1 FROM collection_runs WHERE status='success')"
+                    "SELECT EXISTS(SELECT 1 FROM collection_runs "
+                    "WHERE status IN ('success', 'partial') AND observed_count>0)"
                 ).fetchone()[0]
                 if confirmed:
                     raise ValueError(
@@ -246,7 +272,7 @@ class Store:
             db.execute("""UPDATE collection_runs
                 SET status=?, completed_at=?, observed_count=?, error=? WHERE id=?""",
                 (status, iso(finished_at), len(products), error, run_id))
-            if status == "success":
+            if status in ("success", "partial"):
                 db.executemany("""INSERT INTO product_catalog
                     (query_id, nm_id, first_seen, last_seen, last_title, last_seller)
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -272,11 +298,12 @@ class Store:
                 FROM search_queries q WHERE q.enabled=1 ORDER BY q.display_order""").fetchall()
         return [dict(row) for row in rows]
 
-    def available_depths(self, query_id: int) -> list[int]:
-        """Depths with confirmed complete snapshots for a single search phrase."""
+    def available_depths(self, query_id: int, *, include_partial: bool = False) -> list[int]:
+        """Keep requested depths separate even when displaying short snapshots."""
+        statuses = "('success', 'partial')" if include_partial else "('success')"
         with self.connect() as db:
-            rows = db.execute("""SELECT DISTINCT requested_top_n FROM collection_runs
-                WHERE query_id=? AND status='success'
+            rows = db.execute(f"""SELECT DISTINCT requested_top_n FROM collection_runs
+                WHERE query_id=? AND status IN {statuses} AND observed_count>0
                 ORDER BY requested_top_n DESC""", (query_id,)).fetchall()
         return [row[0] for row in rows]
 
@@ -328,13 +355,16 @@ class Store:
                 (query_id, *nm_ids)).fetchall()
         return [dict(row) for row in rows]
 
-    def latest_observations(self, query_id: int) -> list[dict]:
+    def latest_observations(self, query_id: int, *, include_partial: bool = False) -> list[dict]:
+        statuses = "('success', 'partial')" if include_partial else "('success')"
         with self.connect() as db:
-            rows = db.execute("""SELECT o.position, o.nm_id, o.price_kopecks, o.rating,
-                  o.reviews, o.delivery_days, o.seller, o.title, r.started_at, r.requested_top_n
+            rows = db.execute(f"""SELECT o.position, o.nm_id, o.price_kopecks, o.rating,
+                  o.reviews, o.delivery_days, o.seller, o.title, r.started_at, r.requested_top_n,
+                  r.status AS run_status
                 FROM observations o JOIN collection_runs r ON r.id=o.run_id
                 WHERE r.id=(SELECT id FROM collection_runs
-                    WHERE query_id=? AND status='success' ORDER BY started_at DESC, rowid DESC LIMIT 1)
+                    WHERE query_id=? AND status IN {statuses} AND observed_count>0
+                    ORDER BY started_at DESC, rowid DESC LIMIT 1)
                 ORDER BY o.position""", (query_id,)).fetchall()
         return [dict(row) for row in rows]
 
@@ -352,7 +382,13 @@ class Store:
 
     def count_success_runs(self, query_id: int, *, since: str | None = None,
                            until: str | None = None, depth: int | None = None) -> int:
-        where = ["query_id=?", "status='success'"]
+        return self.count_history_runs(query_id, since=since, until=until, depth=depth)
+
+    def count_history_runs(self, query_id: int, *, since: str | None = None,
+                           until: str | None = None, depth: int | None = None,
+                           include_partial: bool = False) -> int:
+        statuses = "('success', 'partial')" if include_partial else "('success')"
+        where = ["query_id=?", f"status IN {statuses}", "observed_count>0"]
         params: list = [query_id]
         if since:
             where.append("started_at>=?")
@@ -373,11 +409,13 @@ class Store:
         since: str | None = None, until: str | None = None,
         limit_runs: int = 2200,
         depth: int | None = None,
+        include_partial: bool = False,
     ) -> list[dict]:
         """Return dense timeline with SQL NULLs for missing products (never fake ranks).
 
-        Only fully successful runs participate. A missing product during a complete
-        collection produces position=None for that exact run, and a disconnected line.
+        Full snapshots prove absence; optional partial snapshots only prove the
+        ranks actually observed. run_status distinguishes an unknown partial rank
+        from absence in a full snapshot. Both break the line, never invent a rank.
         """
         if not nm_ids:
             return []
@@ -387,7 +425,8 @@ class Store:
             raise ValueError("Depth must be positive")
         if not 1 <= limit_runs <= 5000:
             raise ValueError("Invalid run limit")
-        predicates = ["query_id=?", "status='success'"]
+        statuses = "('success', 'partial')" if include_partial else "('success')"
+        predicates = ["query_id=?", f"status IN {statuses}", "observed_count>0"]
         params: list = [query_id]
         if depth is not None:
             predicates.append("requested_top_n=?")
@@ -399,7 +438,7 @@ class Store:
             predicates.append("started_at<=?")
             params.append(until)
         with self.connect() as db:
-            runs = db.execute(f"""SELECT id, started_at, requested_top_n FROM collection_runs
+            runs = db.execute(f"""SELECT id, started_at, requested_top_n, status FROM collection_runs
                 WHERE {' AND '.join(predicates)} ORDER BY started_at DESC, rowid DESC LIMIT ?""",
                 [*params, limit_runs]).fetchall()
             if not runs:
@@ -414,6 +453,6 @@ class Store:
         return [
             {"run_id": r["id"], "started_at": r["started_at"],
              "requested_top_n": r["requested_top_n"], "nm_id": nm_id,
-             "position": by_key.get((r["id"], nm_id))}
+             "position": by_key.get((r["id"], nm_id)), "run_status": r["status"]}
             for nm_id in nm_ids for r in runs
         ]

@@ -51,7 +51,7 @@ def check(output: Path) -> dict:
     with sync_playwright() as runtime:
         browser = runtime.chromium.launch(headless=True, channel='chromium',
                                           args=['--no-sandbox'])
-        context = browser.new_context(viewport={'width': 1366, 'height': 900},
+        context = browser.new_context(viewport={'width': 1366, 'height': 1050},
                                       accept_downloads=True)
 
         def local_only(route):
@@ -72,6 +72,7 @@ def check(output: Path) -> dict:
             chooser.fill(phrase)
             page.get_by_role('option', name=phrase, exact=True).click()
             expect(page.get_by_role('heading', name=phrase, exact=True)).to_be_visible()
+            expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')
 
         select_query(complete['phrase'])
         expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
@@ -102,7 +103,7 @@ def check(output: Path) -> dict:
             }''', missing['nm_id'])
             assert None in missing_trace['positions'] and not missing_trace['connectgaps']
             report['historical_product_trace'] = missing_trace
-        page.screenshot(path=str(output / 'history-desktop.png'), full_page=True)
+        page.screenshot(path=str(output / 'history-desktop.png'), full_page=True, animations='disabled')
 
         with page.expect_download() as download:
             page.get_by_role('button', name='Скачать историю CSV').click()
@@ -115,7 +116,7 @@ def check(output: Path) -> dict:
         expected_history = store.rank_history(complete['id'], selected_ids,
                                               since=since.astimezone(timezone.utc).isoformat(),
                                               until=until.astimezone(timezone.utc).isoformat(),
-                                              depth=expected[0]['requested_top_n'])
+                                              depth=expected[0]['requested_top_n'], include_partial=True)
         actual_positions = [(r['run_id'], int(r['nm_id']), int(r['position'])
                              if r['position'] else None) for r in history]
         assert actual_positions == [(r['run_id'], r['nm_id'], r['position'])
@@ -131,17 +132,27 @@ def check(output: Path) -> dict:
                                "WHERE query_id=? AND status='success'", (complete['id'],)).fetchone()[0]
         empty_date = datetime.fromisoformat(first).astimezone(MSK).date() - timedelta(days=1)
         dates = page.locator('[data-testid="stDateInputField"]')
-        original_dates = dates.input_value()
-        dates.fill(f'{empty_date:%d.%m.%Y} – {empty_date:%d.%m.%Y}')
-        dates.press('Tab')
-        expect(page.get_by_text('За выбранный период нет успешных снимков.', exact=False)).to_be_visible()
+        original_dates = [dates.nth(i).input_value() for i in range(2)]
+        def set_date(index: int, value: str) -> None:
+            field = dates.nth(index)
+            field.fill(value)
+            field.press('Tab')
+            expect(field).to_have_value(value)
+            expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')
+        for index in range(2):
+            set_date(index, f'{empty_date:%d.%m.%Y}')
+        expect(page.get_by_text('За выбранный период нет снимков.', exact=False)).to_be_visible()
         expect(page.get_by_role('button', name='Скачать историю CSV')).to_have_count(0)
-        dates.fill(original_dates)
-        dates.press('Tab')
+        expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')
+        set_date(0, original_dates[1])
+        expect(page.get_by_text('Начало периода должно быть не позже окончания.', exact=True)).to_be_visible()
+        report['invalid_period_filter'] = 'PASS'
+        for index, value in enumerate(original_dates):
+            set_date(index, value)
         expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
         report['empty_period_filter'] = 'PASS'
 
-        page.get_by_role('tab', name='📋 Последняя выдача').click()
+        page.get_by_role('tab', name='Товары').click()
         with page.expect_download() as download:
             page.get_by_role('button', name='Скачать выдачу CSV').click()
         snapshot_path = output / 'latest_serp.csv'
@@ -160,27 +171,57 @@ def check(output: Path) -> dict:
                                  ('Доставка, дни', 'delivery_days')]:
                 value = Decimal(row[label]) if row[label] else None
                 assert value == (Decimal(str(source[field])) if source[field] is not None else None)
-        page.screenshot(path=str(output / 'snapshot-desktop.png'), full_page=True)
+        page.screenshot(path=str(output / 'snapshot-desktop.png'), full_page=True, animations='disabled')
 
-        page.get_by_role('tab', name='🩺 Состояние сборщика').click()
-        expect(page.get_by_text('Состояние всех 70 запросов', exact=True)).to_be_visible()
-        page.screenshot(path=str(output / 'operations-desktop.png'), full_page=True)
+        page.get_by_role('tab', name='Сборы').click()
+        expect(page.get_by_role('heading', name=f'Все запросы · {len(queries)}', exact=True)).to_be_visible()
+        page.screenshot(path=str(output / 'operations-desktop.png'), full_page=True, animations='disabled')
         partial = next((q for q in queries if not q['last_success'] and q['last_status'] == 'partial'), None)
         if partial:
             select_query(partial['phrase'])
-            page.get_by_role('tab', name='📋 Последняя выдача').click()
-            expect(page.get_by_text('Нет подтверждённого полного снимка.', exact=False)).to_be_visible()
-            expect(page.get_by_role('button', name='Скачать выдачу CSV')).to_have_count(0)
-            page.get_by_role('tab', name='🩺 Состояние сборщика').click()
-            page.screenshot(path=str(output / 'partial-desktop.png'), full_page=True)
-            report['partial_excluded'] = {'query': partial['phrase'], 'count': partial['last_count']}
+            page.get_by_role('tab', name='Товары').click()
+            partial_rows = store.latest_observations(partial['id'], include_partial=True)
+            expect(page.get_by_text(f'Неполный сбор: {len(partial_rows)} из '
+                                   f'{partial_rows[0]["requested_top_n"]} товаров.', exact=True)).to_be_visible()
+            with page.expect_download() as download:
+                page.get_by_role('button', name='Скачать выдачу CSV').click()
+            partial_path = output / 'partial_serp.csv'
+            download.value.save_as(partial_path)
+            exported = read_csv(partial_path)
+            assert [int(r['Артикул']) for r in exported] == [r['nm_id'] for r in partial_rows]
+            assert [int(r['Позиция']) for r in exported] == [r['position'] for r in partial_rows]
+            assert all(r['Статус'] == 'Неполный' for r in exported)
+            page.get_by_role('tab', name='Позиции').click()
+            expect(page.locator('.js-plotly-plot')).to_be_visible()
+            markers = page.locator('.js-plotly-plot').evaluate(
+                '(p) => p.data.flatMap(t => Array.from(t.marker.symbol))')
+            assert markers and all(m == 'diamond-open' for m in markers), markers
+            expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
+            page.screenshot(path=str(output / 'partial-desktop.png'), full_page=True, animations='disabled')
+            report['partial_visible'] = {'query': partial['phrase'], 'count': len(exported),
+                                         'selectable': store.product_count(partial['id']),
+                                         'markers': markers}
 
         select_query(complete['phrase'])
-        page.get_by_role('tab', name='📉 Динамика позиций').click()
+        page.get_by_role('tab', name='Позиции').click()
         search = page.get_by_role('textbox', name='Поиск артикула или названия')
         search.fill(str(expected[0]['nm_id']))
         search.press('Enter')
-        expect(page.get_by_text('Найдено подсказок: 1 из', exact=False)).to_be_visible()
+        expect(page.get_by_text('Найдено: 1 · В истории:', exact=False)).to_be_visible()
+        # All configured phrases must open their actual latest snapshot, including short catalogs.
+        checked_queries = []
+        for query in queries:
+            select_query(query['phrase'])
+            rows = store.latest_observations(query['id'], include_partial=True)
+            metric = page.get_by_test_id('stMetric').filter(has_text='В выдаче')
+            expect(metric.get_by_test_id('stMetricValue')).to_have_text(str(len(rows)) if rows else '—')
+            expect(page.locator('[data-testid="stException"]')).to_have_count(0)
+            checked_queries.append({'query_id': query['id'], 'rows': len(rows)})
+        report['query_navigation'] = checked_queries
+        select_query(complete['phrase'])
+        page.get_by_role('button', name='Обновить', exact=True).click()
+        expect(page.locator('.js-plotly-plot')).to_be_visible()
+        report['refresh'] = 'PASS'
         expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')
         page.locator('[data-testid="stSidebar"]').hover()
         page.locator('[data-testid="stSidebarCollapseButton"] button').click()
@@ -191,7 +232,7 @@ def check(output: Path) -> dict:
                                '.getBoundingClientRect().right <= 1')
         expect(page.locator('.js-plotly-plot')).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1')
-        page.screenshot(path=str(output / 'history-mobile.png'), full_page=True)
+        page.screenshot(path=str(output / 'history-mobile.png'), full_page=True, animations='disabled')
         expect(page.locator('[data-testid="stException"]')).to_have_count(0)
         assert not errors, errors
         assert not outside_requests, outside_requests

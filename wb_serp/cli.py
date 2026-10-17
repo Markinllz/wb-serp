@@ -88,6 +88,17 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
                 if should_stop is not None and should_stop():
                     break
             result = collector.collect(query["id"], query["phrase"], scheduled_for=slot)
+            if (result.status == "failed" and result.error
+                    and result.error.startswith("Invalid SERP data: Duplicate nm_id=")):
+                # Pagination may change between requests. Keep the failed attempt
+                # and retry from page 1 once, just as in the diagnostic batch.
+                if should_stop is None or not should_stop():
+                    log.warning("Duplicate ranks for %s; retrying the entire snapshot once",
+                                query["phrase"])
+                    if cfg.query_delay_seconds:
+                        time.sleep(cfg.query_delay_seconds)
+                    if should_stop is None or not should_stop():
+                        result = collector.collect(query["id"], query["phrase"], scheduled_for=slot)
             completed += 1
             if result.status != "success":
                 failed += 1

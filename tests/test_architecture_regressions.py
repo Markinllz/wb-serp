@@ -131,7 +131,7 @@ def test_legacy_migration_preserves_existing_history(tmp_path):
     store.initialize()
     assert store.rank_history(query['id'], [7])[0]['position'] == 1
     with store.connect() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
 
 

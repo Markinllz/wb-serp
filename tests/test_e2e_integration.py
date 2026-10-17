@@ -234,3 +234,49 @@ def test_invalid_and_missing_env_settings(monkeypatch):
     monkeypatch.setenv("WB_TOP_N", "-1")
     with pytest.raises(ValueError, match="WB_TOP_N"):
         Settings.from_env()
+
+
+def test_worker_retries_duplicate_snapshot_from_page_one_and_keeps_both_attempts(tmp_path, monkeypatch):
+    cfg = settings(tmp_path)
+    store = cli.prepare(cfg)
+    calls = []
+    pages = [(1, 2), (2, 3), (1, 3), (4, 5)]
+    def handler(request):
+        calls.append(int(request.url.params['page']))
+        return httpx.Response(200, json={'products': [product(n) for n in pages[len(calls) - 1]]})
+    monkeypatch.setattr(cli, 'build_client', lambda config: mock_client(config, handler))
+    assert cli.run_cycle(cfg, store, phrase='постельное бельё') == (1, 0, 0)
+    assert calls == [1, 2, 1, 2]
+    qid = store.enabled_queries()[0]['id']
+    assert [r['status'] for r in store.recent_runs(qid)] == ['success', 'failed']
+    assert [p['nm_id'] for p in store.latest_observations(qid)] == [1, 3, 4, 5]
+    assert store.product_count(qid) == 4
+    assert store.count_success_runs(qid) == 1
+
+
+def test_worker_duplicate_retry_is_bounded(tmp_path, monkeypatch):
+    cfg = settings(tmp_path)
+    store = cli.prepare(cfg)
+    calls = []
+    def handler(request):
+        calls.append(int(request.url.params['page']))
+        return httpx.Response(200, json={'products': [product(1), product(2)]})
+    monkeypatch.setattr(cli, 'build_client', lambda config: mock_client(config, handler))
+    assert cli.run_cycle(cfg, store, phrase='постельное бельё') == (1, 0, 1)
+    assert calls == [1, 2, 1, 2]
+    assert len(store.recent_runs()) == 2
+    assert store.product_count(store.enabled_queries()[0]['id']) == 0
+
+
+def test_worker_stop_request_prevents_duplicate_retry(tmp_path, monkeypatch):
+    cfg = settings(tmp_path)
+    store = cli.prepare(cfg)
+    calls = []
+    def handler(request):
+        calls.append(int(request.url.params['page']))
+        return httpx.Response(200, json={'products': [product(1), product(2)]})
+    monkeypatch.setattr(cli, 'build_client', lambda config: mock_client(config, handler))
+    assert cli.run_cycle(cfg, store, phrase='постельное бельё',
+                         should_stop=lambda: len(calls) >= 2) == (1, 0, 1)
+    assert calls == [1, 2]
+    assert len(store.recent_runs()) == 1
