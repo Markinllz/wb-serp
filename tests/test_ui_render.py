@@ -58,6 +58,7 @@ class FakeStreamlit(ModuleType):
     def date_input(self, name, *, value, **kwargs): return value
     def button(self, *args, **kwargs): return False
     def text_input(self, *args, **kwargs): return ""
+    def radio(self, name, options, **kwargs): return self.session_state.get(kwargs.get("key"), options[0])
     def multiselect(self, *args, default=None, key=None, **kwargs):
         return self.session_state.get(key, default or [])
     def plotly_chart(self, chart, **kwargs): self.plots.append(chart)
@@ -98,7 +99,7 @@ def test_dashboard_empty_db_shows_no_queries(tmp_path, monkeypatch):
     assert "нет запросов" in st.messages[0][1]
 
 
-def test_dashboard_complete_read_only_flow_with_chart_and_two_csv_exports(tmp_path, monkeypatch):
+def test_dashboard_complete_read_only_flow_with_charts_and_csv_exports(tmp_path, monkeypatch):
     app, st = load_dashboard(monkeypatch)
     cfg = config.Settings.from_env()
     from dataclasses import replace
@@ -121,20 +122,27 @@ def test_dashboard_complete_read_only_flow_with_chart_and_two_csv_exports(tmp_pa
     write("run2", [12, 13], now - timedelta(hours=1))
     monkeypatch.setattr(app.Settings, "from_env", lambda: replace(cfg, database_path=db, top_n=2))
     app.main()
-    assert len(st.plots) == 1
+    assert len(st.plots) == 2
     chart = st.plots[0]
     assert chart.layout.yaxis.autorange == "reversed"
     assert len(chart.data) == 2
-    assert len(st.exports) == 2
+    assert len(st.exports) == 3
     assert all(isinstance(blob, bytes) and len(blob) > 20 for _, blob in st.exports)
     history_csv = next(blob for label, blob in st.exports if label == "Скачать историю CSV")
     positions = [row["position"] for row in csv.DictReader(
         io.StringIO(history_csv.decode("utf-8-sig")))]
     assert set(positions) == {"", "1", "2"}
     assert len(st.frames) >= 3
-    assert list(st.frames[0]["Артикул"]) == [12, 13]
-    assert (st.frames[0]["Цена, ₽"] == 100.99).all()
-    assert len(st.frames[1]) == 2  # monitor includes both configured phrases
+    latest = next(frame for frame in st.frames if "Цена, ₽" in frame)
+    assert list(latest["Артикул"]) == [12, 13]
+    assert (latest["Цена, ₽"] == 100.99).all()
+    monitor = next(frame for frame in st.frames if "Последний полный" in frame)
+    assert len(monitor) == 2
+    st.session_state[f"history_metric_{query['id']}"] = "Цены"
+    st.plots.clear()
+    app.main()
+    assert st.plots[0].layout.yaxis.autorange is True
+    assert list(st.plots[0].data[0].y) == [100.99, 100.99]
 
 
 def test_partial_snapshot_is_selectable_exported_and_marked(tmp_path, monkeypatch):

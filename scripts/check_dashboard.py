@@ -77,7 +77,7 @@ def check(output: Path) -> dict:
         select_query(complete['phrase'])
         expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
         expect(page.locator('[data-testid="stException"]')).to_have_count(0)
-        plot = page.locator('.js-plotly-plot')
+        plot = page.locator('.js-plotly-plot').first
         expect(plot).to_be_visible()
         graph = plot.evaluate('(p) => ({range:p._fullLayout.yaxis.range, '
                               'curves:p.data.length, gaps:p.data.map(t=>t.connectgaps)})')
@@ -127,6 +127,54 @@ def check(output: Path) -> dict:
                        for r in expected_history)
         report['history_rows'] = len(history)
         report['history_gaps'] = sum(r['position'] is None for r in expected_history)
+        assert [int(r['price_kopecks']) if r['price_kopecks'] else None for r in history] == [
+            r['price_kopecks'] for r in expected_history]
+        page.get_by_test_id('stRadio').get_by_text('Цены', exact=True).click()
+        page.wait_for_function('document.querySelector(".js-plotly-plot").layout.yaxis.title.text === "Цена, ₽"')
+        price_traces = plot.evaluate('(p) => p.data.map(t => ({id:t.name, values:Array.from(t.y), gaps:t.connectgaps}))')
+        for trace in price_traces:
+            source = [r for r in expected_history if str(r['nm_id']) == trace['id']]
+            assert trace['values'] == [r['price_kopecks'] / 100 if r['price_kopecks'] is not None
+                                        else None for r in source]
+            assert trace['gaps'] is False
+        page.screenshot(path=str(output / 'prices-desktop.png'), full_page=True, animations='disabled')
+        report['price_history'] = {'status': 'PASS', 'products': len(price_traces)}
+        page.get_by_test_id('stRadio').get_by_text('Позиции', exact=True).click()
+        page.wait_for_function('document.querySelector(".js-plotly-plot").layout.yaxis.title.text === "Позиция"')
+        changes = page.get_by_test_id('stExpander').filter(has_text='Изменения выдачи')
+        comparison = store.compare_latest_snapshots(complete['id'], depth=expected[0]['requested_top_n'],
+                      since=since.astimezone(timezone.utc).isoformat(),
+                      until=until.astimezone(timezone.utc).isoformat())
+        if comparison:
+            changes.locator('summary').click()
+            with page.expect_download() as download:
+                page.get_by_role('button', name='Скачать сравнение CSV').click()
+            changes_path = output / 'rank_changes.csv'
+            download.value.save_as(changes_path)
+            exported = read_csv(changes_path)
+            actual = {int(r['Артикул']): r for r in exported}
+            assert set(actual) == {r['nm_id'] for r in comparison['products']}
+            for source in comparison['products']:
+                row = actual[source['nm_id']]
+                for label, key in [('Было', 'before'), ('Стало', 'after'), ('Изменение', 'delta')]:
+                    assert (int(row[label]) if row[label] else None) == source[key]
+                assert row['Снимок_до'] == comparison['before']['started_at']
+                assert row['Снимок_после'] == comparison['after']['started_at']
+            changed = [r for r in comparison['products'] if r['delta'] not in (None, 0)]
+            if changed:
+                bars = changes.locator('.js-plotly-plot')
+                expect(bars).to_be_visible()
+                plotted = bars.evaluate('(p) => ({x:Array.from(p.data[0].x), ids:p.data[0].customdata.map(r=>r[0])})')
+                by_id = {r['nm_id']: r for r in comparison['products']}
+                assert len(plotted['ids']) == min(12, len(changed))
+                assert all(delta == by_id[int(nm)]['delta'] for nm, delta in
+                           zip(plotted['ids'], plotted['x'], strict=True))
+                bars.screenshot(path=str(output / 'changes-chart.png'), animations='disabled')
+            report['snapshot_comparison'] = {'status': 'PASS', 'rows': len(exported),
+                       'entered': sum(r['change'] == 'entered' for r in comparison['products']),
+                       'left': sum(r['change'] == 'left' for r in comparison['products'])}
+            changes.locator('summary').click()
+            page.get_by_role('heading', name=complete['phrase'], exact=True).scroll_into_view_if_needed()
         with store.connect() as db:
             first = db.execute("SELECT min(started_at) FROM collection_runs "
                                "WHERE query_id=? AND status='success'", (complete['id'],)).fetchone()[0]
@@ -192,8 +240,8 @@ def check(output: Path) -> dict:
             assert [int(r['Позиция']) for r in exported] == [r['position'] for r in partial_rows]
             assert all(r['Статус'] == 'Неполный' for r in exported)
             page.get_by_role('tab', name='Позиции').click()
-            expect(page.locator('.js-plotly-plot')).to_be_visible()
-            markers = page.locator('.js-plotly-plot').evaluate(
+            expect(page.locator('.js-plotly-plot').first).to_be_visible()
+            markers = page.locator('.js-plotly-plot').first.evaluate(
                 '(p) => p.data.flatMap(t => Array.from(t.marker.symbol))')
             assert markers and all(m == 'diamond-open' for m in markers), markers
             expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
@@ -220,7 +268,7 @@ def check(output: Path) -> dict:
         report['query_navigation'] = checked_queries
         select_query(complete['phrase'])
         page.get_by_role('button', name='Обновить', exact=True).click()
-        expect(page.locator('.js-plotly-plot')).to_be_visible()
+        expect(page.locator('.js-plotly-plot').first).to_be_visible()
         report['refresh'] = 'PASS'
         expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')
         page.locator('[data-testid="stSidebar"]').hover()
@@ -230,7 +278,7 @@ def check(output: Path) -> dict:
         expect(page.locator('[data-testid="stSidebar"]')).to_have_attribute('aria-expanded', 'false')
         page.wait_for_function('document.querySelector(\'[data-testid="stSidebar"]\')'
                                '.getBoundingClientRect().right <= 1')
-        expect(page.locator('.js-plotly-plot')).to_be_visible()
+        expect(page.locator('.js-plotly-plot').first).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1')
         page.screenshot(path=str(output / 'history-mobile.png'), full_page=True, animations='disabled')
         expect(page.locator('[data-testid="stException"]')).to_have_count(0)

@@ -446,13 +446,57 @@ class Store:
             runs = list(reversed(runs))
             placeholders = ",".join("?" for _ in nm_ids)
             ids_placeholders = ",".join("?" for _ in runs)
-            found = db.execute(f"""SELECT run_id, nm_id, position FROM observations
+            found = db.execute(f"""SELECT run_id, nm_id, position, price_kopecks, rating,
+                    reviews, delivery_days, seller, title FROM observations
                 WHERE run_id IN ({ids_placeholders}) AND nm_id IN ({placeholders})""",
                 [*(r["id"] for r in runs), *nm_ids]).fetchall()
-        by_key = {(r["run_id"], r["nm_id"]): r["position"] for r in found}
+        fields = ("position", "price_kopecks", "rating", "reviews", "delivery_days", "seller", "title")
+        by_key = {(r["run_id"], r["nm_id"]): {key: r[key] for key in fields} for r in found}
         return [
             {"run_id": r["id"], "started_at": r["started_at"],
              "requested_top_n": r["requested_top_n"], "nm_id": nm_id,
-             "position": by_key.get((r["id"], nm_id)), "run_status": r["status"]}
+             **by_key.get((r["id"], nm_id), dict.fromkeys(fields)), "run_status": r["status"]}
             for nm_id in nm_ids for r in runs
         ]
+
+    def compare_latest_snapshots(self, query_id: int, *, depth: int,
+                                 since: str | None = None, until: str | None = None) -> dict | None:
+        """Compare two complete snapshots of the same query, region and depth.
+
+        Entering/leaving the top is categorical: an absent rank has no numeric delta.
+        Partial and failed attempts cannot substantiate movements of the whole SERP.
+        """
+        if depth < 1:
+            raise ValueError("Depth must be positive")
+        predicates = ["query_id=?", "status='success'", "requested_top_n=?"]
+        params: list = [query_id, depth]
+        for clause, value in (("started_at>=?", since), ("started_at<=?", until)):
+            if value:
+                predicates.append(clause)
+                params.append(value)
+        with self.connect() as db:
+            runs = db.execute(f"""SELECT id, started_at, requested_top_n, destination
+                FROM collection_runs WHERE {' AND '.join(predicates)}
+                ORDER BY started_at DESC, rowid DESC LIMIT 2""", params).fetchall()
+            if len(runs) < 2:
+                return None
+            after, before = runs
+            if before["destination"] != after["destination"]:
+                raise ValueError("Cannot compare snapshots from different destinations")
+            rows = db.execute("""SELECT run_id, nm_id, position, title FROM observations
+                WHERE run_id IN (?, ?)""", (before["id"], after["id"])).fetchall()
+        old = {r["nm_id"]: r for r in rows if r["run_id"] == before["id"]}
+        new = {r["nm_id"]: r for r in rows if r["run_id"] == after["id"]}
+        products = []
+        for nm in sorted(old.keys() | new.keys()):
+            previous, current = old.get(nm), new.get(nm)
+            delta = previous["position"] - current["position"] if previous and current else None
+            status = ("entered" if previous is None else "left" if current is None else
+                      "up" if delta > 0 else "down" if delta < 0 else "unchanged")
+            products.append({"nm_id": nm, "title": (current["title"] if current else None)
+                             or (previous["title"] if previous else None),
+                             "before": previous["position"] if previous else None,
+                             "after": current["position"] if current else None,
+                             "delta": delta, "change": status})
+        products.sort(key=lambda r: (r["after"] is None, r["after"] or r["before"], r["nm_id"]))
+        return {"before": dict(before), "after": dict(after), "products": products}

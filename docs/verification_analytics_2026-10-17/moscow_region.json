@@ -1,0 +1,14 @@
+{
+  "checked_at": "2026-10-17T01:15:41.182727+00:00",
+  "status": "PASS",
+  "endpoint": "https://user-geo-data.wildberries.ru/get-geo-info",
+  "request": {
+    "latitude": "55.7539",
+    "longitude": "37.6208",
+    "address": "Москва, Красная площадь",
+    "currency": "RUB"
+  },
+  "http_status": 200,
+  "configured_destination": 1259570991,
+  "moscow_destination": 1259570991
+}

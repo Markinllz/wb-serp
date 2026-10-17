@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from wb_serp.charts import chart_rank_history
+from wb_serp.charts import chart_product_history, chart_rank_changes
 from wb_serp.config import Settings
 from wb_serp.store import Store
 
@@ -74,7 +74,7 @@ def snapshot_table(rows: list[dict]) -> pd.DataFrame:
 
 
 def show_history(store: Store, query_id: int, latest_rows: list[dict], product_total: int,
-                 top_n: int, start_date: date | None, end_date: date | None) -> None:
+                 top_n: int, start_date: date | None, end_date: date | None) -> int | None:
     if not product_total:
         st.info("Товаров пока нет. Результаты запусков — на вкладке «Сборы».")
         return
@@ -105,7 +105,7 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
                                     format_func=lambda n: f"Топ-{n}")
     if not selected:
         st.info("Выберите артикулы для сравнения.")
-        return
+        return chosen_depth
     if start_date is None or end_date is None:
         st.info("Укажите начало и конец периода графика.")
         return
@@ -122,22 +122,73 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
                                  depth=chosen_depth, include_partial=True)
     if not history:
         st.info("За выбранный период нет снимков. Измените период графика.")
-        return
-    if not any(row["position"] is not None for row in history):
-        st.info("Выбранные товары не найдены в снимках за этот период.")
-    st.plotly_chart(chart_rank_history(history, selected), width="stretch", theme=None,
-                    config={"displaylogo": False, "responsive": True, "scrollZoom": False})
+        return chosen_depth
+    metric = st.radio("Показатель", ["Позиции", "Цены"], horizontal=True,
+                       key=f"history_metric_{query_id}", label_visibility="collapsed")
+    field = "position" if metric == "Позиции" else "price_kopecks"
+    if any(row[field] is not None for row in history):
+        st.plotly_chart(chart_product_history(history, selected,
+                        metric="position" if metric == "Позиции" else "price"),
+                        width="stretch", theme=None,
+                        config={"displaylogo": False, "responsive": True, "scrollZoom": False})
+    else:
+        st.info("Выбранные товары не найдены в снимках за этот период." if field == "position"
+                else "Цены выбранных товаров за этот период недоступны.")
+    if metric == "Цены":
+        st.caption("Цена из ответа Wildberries. Персональные скидки покупателя могут отличаться.")
     absent = sum(row["position"] is None and row["run_status"] == "success" for row in history)
     partial = any(row["run_status"] == "partial" for row in history)
-    if absent:
+    if absent and metric == "Позиции":
         st.caption(f"Пропуски в полном топ-{chosen_depth}: {absent}.")
     if partial:
-        st.caption("Пустой ромб — позиция из неполного сбора. Пропуск в нём означает отсутствие данных.")
+        st.caption("Пустой ромб — данные неполного сбора. Пропуск в нём означает отсутствие данных.")
     export = pd.DataFrame(history)
-    export["position"] = export["position"].astype("Int64")
+    for column in ("position", "price_kopecks", "reviews", "delivery_days"):
+        export[column] = export[column].astype("Int64")
     export["started_at"] = export["started_at"].map(display_time)
     st.download_button("Скачать историю CSV", export.to_csv(index=False).encode("utf-8-sig"),
                        "rank_history.csv", mime="text/csv", on_click="ignore")
+    return chosen_depth
+
+
+def show_changes(store: Store, query_id: int, depth: int, start_date: date, end_date: date) -> None:
+    with st.expander("Изменения выдачи"):
+        comparison = store.compare_latest_snapshots(query_id, depth=depth,
+                    since=to_date_bound(start_date, end=False), until=to_date_bound(end_date, end=True))
+        if comparison is None:
+            st.info("Для сравнения нужны два полных снимка одинаковой глубины за выбранный период.")
+            return
+        before, after = comparison["before"], comparison["after"]
+        products = comparison["products"]
+        st.caption(f"Вся выдача · топ-{depth} · {display_time(before['started_at'])} → "
+                   f"{display_time(after['started_at'])}")
+        counts = {status: sum(p["change"] == status for p in products)
+                  for status in ("up", "down", "entered", "left")}
+        st.caption(f"Выше: {counts['up']} · Ниже: {counts['down']} · "
+                   f"Вошли: {counts['entered']} · Вышли: {counts['left']}")
+        changed = counts["up"] + counts["down"]
+        if changed:
+            st.plotly_chart(chart_rank_changes(products), width="stretch", theme=None,
+                            config={"displaylogo": False, "responsive": True, "scrollZoom": False})
+            if changed > 12:
+                st.caption("На графике — 12 наибольших изменений. Все товары — в таблице.")
+        else:
+            st.info("У общих товаров позиции не изменились.")
+        labels = {"up": "Выше", "down": "Ниже", "entered": "Вошёл в топ",
+                  "left": "Вышел из топа", "unchanged": "Без изменений"}
+        table = pd.DataFrame(products)
+        table["change"] = table["change"].map(labels)
+        for column in ("before", "after", "delta"):
+            table[column] = table[column].astype("Int64")
+        table = table.rename(columns={"nm_id": "Артикул", "title": "Название", "before": "Было",
+                    "after": "Стало", "delta": "Изменение", "change": "Статус"})
+        st.dataframe(table, hide_index=True, width="stretch", height=320, placeholder="—",
+                     column_config={"Изменение": st.column_config.NumberColumn(format="%+d")})
+        st.caption("Изменение = было − стало. У вошедших и вышедших товаров числового изменения нет.")
+        export = table.assign(Снимок_до=before["started_at"], Снимок_после=after["started_at"],
+                               Глубина=depth, Регион=after["destination"])
+        st.download_button("Скачать сравнение CSV", export.to_csv(index=False).encode("utf-8-sig"),
+                           "rank_changes.csv", mime="text/csv", on_click="ignore")
 
 
 def main() -> None:
@@ -204,7 +255,9 @@ def main() -> None:
 
     overview, snapshot, operations = st.tabs(["Позиции", "Товары", "Сборы"])
     with overview:
-        show_history(store, query_id, latest_rows, product_total, cfg.top_n, start_date, end_date)
+        depth = show_history(store, query_id, latest_rows, product_total, cfg.top_n, start_date, end_date)
+        if depth is not None and start_date is not None and end_date is not None and start_date <= end_date:
+            show_changes(store, query_id, depth, start_date, end_date)
     with snapshot:
         if latest_rows:
             table = snapshot_table(latest_rows)
