@@ -1,0 +1,221 @@
+"""Check the running dashboard in Chromium against its SQLite data.
+
+Run inside the dashboard container after stopping the collector. Saves screenshots,
+CSV downloads and a JSON report; does not modify the database or contact WB.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+import json
+from pathlib import Path
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
+
+from playwright.sync_api import expect, sync_playwright
+
+from wb_serp.config import Settings
+from wb_serp.store import Store
+
+MSK = ZoneInfo('Europe/Moscow')
+
+
+def read_csv(path: Path) -> list[dict]:
+    with path.open(encoding='utf-8-sig', newline='') as source:
+        return list(csv.DictReader(source))
+
+
+def database_counts(store: Store) -> dict:
+    with store.connect() as db:
+        return {table: db.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
+                for table in ('collection_runs', 'observations', 'product_catalog')}
+
+
+def check(output: Path) -> dict:
+    output.mkdir(parents=True, exist_ok=False)
+    cfg = Settings.from_env()
+    store = Store(cfg.database_path, readonly=True)
+    queries = store.queries_dashboard()
+    complete = next((q for q in queries if q['last_success']), None)
+    if complete is None:
+        raise RuntimeError('At least one successful live snapshot is required')
+    expected = store.latest_observations(complete['id'])
+    before = database_counts(store)
+    outside_requests: list[str] = []
+    errors: list[str] = []
+    report = {'started_at': datetime.now(timezone.utc).isoformat(),
+              'query': complete['phrase'], 'snapshot_rows': len(expected)}
+
+    with sync_playwright() as runtime:
+        browser = runtime.chromium.launch(headless=True, channel='chromium',
+                                          args=['--no-sandbox'])
+        context = browser.new_context(viewport={'width': 1366, 'height': 900},
+                                      accept_downloads=True)
+
+        def local_only(route):
+            if urlsplit(route.request.url).hostname in ('127.0.0.1', 'localhost'):
+                route.continue_()
+            else:
+                outside_requests.append(route.request.url)
+                route.abort()
+
+        context.route('**/*', local_only)
+        page = context.new_page()
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.goto('http://127.0.0.1:8501', wait_until='domcontentloaded')
+        chooser = page.get_by_role('combobox', name='Поисковый запрос')
+        expect(chooser).to_be_visible(timeout=30000)
+
+        def select_query(phrase: str) -> None:
+            chooser.fill(phrase)
+            page.get_by_role('option', name=phrase, exact=True).click()
+            expect(page.get_by_role('heading', name=phrase, exact=True)).to_be_visible()
+
+        select_query(complete['phrase'])
+        expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
+        expect(page.locator('[data-testid="stException"]')).to_have_count(0)
+        plot = page.locator('.js-plotly-plot')
+        expect(plot).to_be_visible()
+        graph = plot.evaluate('(p) => ({range:p._fullLayout.yaxis.range, '
+                              'curves:p.data.length, gaps:p.data.map(t=>t.connectgaps)})')
+        assert graph['range'][0] > graph['range'][1], graph
+        assert graph['curves'] == min(3, len(expected)), graph
+        assert not any(graph['gaps']), graph
+        selected_ids = [row['nm_id'] for row in expected[:3]]
+        current_ids = {row['nm_id'] for row in expected}
+        missing = next((row for row in store.known_products(complete['id'])
+                        if row['nm_id'] not in current_ids), None)
+        if missing:
+            comparison = page.get_by_role('combobox', name='Товары для сравнения')
+            comparison.fill(str(missing['nm_id']))
+            page.get_by_role('option').filter(has_text=str(missing['nm_id'])).click()
+            comparison.press('Escape')
+            page.get_by_role('heading', name=complete['phrase'], exact=True).click()
+            page.wait_for_function('document.querySelector(".js-plotly-plot").data.length === 4')
+            selected_ids.append(missing['nm_id'])
+            report['historical_product_absent_from_latest'] = missing['nm_id']
+            missing_trace = plot.evaluate('''(p, id) => {
+                const trace = p.data.find(t => t.name === String(id));
+                return {positions: Array.from(trace.y), connectgaps: trace.connectgaps};
+            }''', missing['nm_id'])
+            assert None in missing_trace['positions'] and not missing_trace['connectgaps']
+            report['historical_product_trace'] = missing_trace
+        page.screenshot(path=str(output / 'history-desktop.png'), full_page=True)
+
+        with page.expect_download() as download:
+            page.get_by_role('button', name='Скачать историю CSV').click()
+        history_path = output / 'rank_history.csv'
+        download.value.save_as(history_path)
+        history = read_csv(history_path)
+        today = datetime.now(MSK).date()
+        since = datetime.combine(today - timedelta(days=14), datetime.min.time(), tzinfo=MSK)
+        until = datetime.combine(today, datetime.max.time(), tzinfo=MSK)
+        expected_history = store.rank_history(complete['id'], selected_ids,
+                                              since=since.astimezone(timezone.utc).isoformat(),
+                                              until=until.astimezone(timezone.utc).isoformat(),
+                                              depth=expected[0]['requested_top_n'])
+        actual_positions = [(r['run_id'], int(r['nm_id']), int(r['position'])
+                             if r['position'] else None) for r in history]
+        assert actual_positions == [(r['run_id'], r['nm_id'], r['position'])
+                                    for r in expected_history]
+        assert history, 'History export is empty'
+        if missing:
+            assert any(r['nm_id'] == missing['nm_id'] and r['position'] is None
+                       for r in expected_history)
+        report['history_rows'] = len(history)
+        report['history_gaps'] = sum(r['position'] is None for r in expected_history)
+        with store.connect() as db:
+            first = db.execute("SELECT min(started_at) FROM collection_runs "
+                               "WHERE query_id=? AND status='success'", (complete['id'],)).fetchone()[0]
+        empty_date = datetime.fromisoformat(first).astimezone(MSK).date() - timedelta(days=1)
+        dates = page.locator('[data-testid="stDateInputField"]')
+        original_dates = dates.input_value()
+        dates.fill(f'{empty_date:%d.%m.%Y} – {empty_date:%d.%m.%Y}')
+        dates.press('Tab')
+        expect(page.get_by_text('За выбранный период нет успешных снимков.', exact=False)).to_be_visible()
+        expect(page.get_by_role('button', name='Скачать историю CSV')).to_have_count(0)
+        dates.fill(original_dates)
+        dates.press('Tab')
+        expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
+        report['empty_period_filter'] = 'PASS'
+
+        page.get_by_role('tab', name='📋 Последняя выдача').click()
+        with page.expect_download() as download:
+            page.get_by_role('button', name='Скачать выдачу CSV').click()
+        snapshot_path = output / 'latest_serp.csv'
+        download.value.save_as(snapshot_path)
+        snapshot = read_csv(snapshot_path)
+        assert len(snapshot) == len(expected)
+        for row, source in zip(snapshot, expected, strict=True):
+            assert int(row['Позиция']) == source['position']
+            assert int(row['Артикул']) == source['nm_id']
+            price = Decimal(row['Цена, ₽']) if row['Цена, ₽'] else None
+            assert price == (Decimal(source['price_kopecks']) / 100
+                             if source['price_kopecks'] is not None else None)
+            for label, field in [('Название', 'title'), ('Продавец', 'seller')]:
+                assert row[label] == (source[field] or '')
+            for label, field in [('Рейтинг', 'rating'), ('Отзывы', 'reviews'),
+                                 ('Доставка, дни', 'delivery_days')]:
+                value = Decimal(row[label]) if row[label] else None
+                assert value == (Decimal(str(source[field])) if source[field] is not None else None)
+        page.screenshot(path=str(output / 'snapshot-desktop.png'), full_page=True)
+
+        page.get_by_role('tab', name='🩺 Состояние сборщика').click()
+        expect(page.get_by_text('Состояние всех 70 запросов', exact=True)).to_be_visible()
+        page.screenshot(path=str(output / 'operations-desktop.png'), full_page=True)
+        partial = next((q for q in queries if not q['last_success'] and q['last_status'] == 'partial'), None)
+        if partial:
+            select_query(partial['phrase'])
+            page.get_by_role('tab', name='📋 Последняя выдача').click()
+            expect(page.get_by_text('Нет подтверждённого полного снимка.', exact=False)).to_be_visible()
+            expect(page.get_by_role('button', name='Скачать выдачу CSV')).to_have_count(0)
+            page.get_by_role('tab', name='🩺 Состояние сборщика').click()
+            page.screenshot(path=str(output / 'partial-desktop.png'), full_page=True)
+            report['partial_excluded'] = {'query': partial['phrase'], 'count': partial['last_count']}
+
+        select_query(complete['phrase'])
+        page.get_by_role('tab', name='📉 Динамика позиций').click()
+        search = page.get_by_role('textbox', name='Поиск артикула или названия')
+        search.fill(str(expected[0]['nm_id']))
+        search.press('Enter')
+        expect(page.get_by_text('Найдено подсказок: 1 из', exact=False)).to_be_visible()
+        expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')
+        page.locator('[data-testid="stSidebar"]').hover()
+        page.locator('[data-testid="stSidebarCollapseButton"] button').click()
+        expect(page.locator('[data-testid="stSidebar"]')).to_have_attribute('aria-expanded', 'false')
+        page.set_viewport_size({'width': 390, 'height': 844})
+        expect(page.locator('[data-testid="stSidebar"]')).to_have_attribute('aria-expanded', 'false')
+        page.wait_for_function('document.querySelector(\'[data-testid="stSidebar"]\')'
+                               '.getBoundingClientRect().right <= 1')
+        expect(page.locator('.js-plotly-plot')).to_be_visible()
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1')
+        page.screenshot(path=str(output / 'history-mobile.png'), full_page=True)
+        expect(page.locator('[data-testid="stException"]')).to_have_count(0)
+        assert not errors, errors
+        assert not outside_requests, outside_requests
+        browser.close()
+
+    after = database_counts(store)
+    assert before == after, 'Database changed during UI check; stop collector and retry'
+    report.update(status='PASS', graph=graph, database_before=before, database_after=after,
+                  external_requests=outside_requests, javascript_errors=errors,
+                  completed_at=datetime.now(timezone.utc).isoformat())
+    (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+    return report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, default=Path('/app/data/dashboard-check') /
+                        datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+    args = parser.parse_args()
+    report = check(args.output)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    print(f'Artifacts: {args.output}')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

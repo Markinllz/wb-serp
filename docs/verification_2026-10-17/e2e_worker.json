@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "startup_collection_disabled_for_test": true,
+  "waited_for_active_collector_lock": true,
+  "first_exit_code": 0,
+  "restart_exit_code": 0,
+  "final_state": "stopped"
+}

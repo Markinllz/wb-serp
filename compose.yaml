@@ -1,0 +1,89 @@
+name: wb-serp
+x-app: &app
+  build:
+    context: .
+    target: app
+  restart: unless-stopped
+  init: true
+  environment:
+    WB_DB_PATH: /app/data/serp.db
+    WB_QUERIES_PATH: /app/config/queries.txt
+    WB_DESTINATION: ${WB_DESTINATION:--1257786}
+    WB_TOP_N: ${WB_TOP_N:-200}
+    WB_REQUEST_DELAY_SECONDS: ${WB_REQUEST_DELAY_SECONDS:-5}
+    WB_REQUEST_RETRIES: ${WB_REQUEST_RETRIES:-3}
+    WB_PAGE_LIMIT: ${WB_PAGE_LIMIT:-15}
+    WB_SEARCH_URL: ${WB_SEARCH_URL:-https://u-search.wb.ru/exactmatch/ru/common/v18/search}
+    WB_RUN_ON_STARTUP: ${WB_RUN_ON_STARTUP:-true}
+    WB_HTTP_TRANSPORT: ${WB_HTTP_TRANSPORT:-httpx}
+    WB_SESSION_FILE: ${WB_SESSION_FILE:-}
+    WB_QUERY_DELAY_SECONDS: ${WB_QUERY_DELAY_SECONDS:-5}
+    WB_RETRY_BASE_SECONDS: ${WB_RETRY_BASE_SECONDS:-5}
+    WB_RETRY_MAX_SECONDS: ${WB_RETRY_MAX_SECONDS:-60}
+    WB_RETRY_JITTER_SECONDS: ${WB_RETRY_JITTER_SECONDS:-1}
+    WB_BROWSER_PROFILE_PATH: /app/data/browser-profile
+    WB_BROWSER_TIMEOUT_SECONDS: ${WB_BROWSER_TIMEOUT_SECONDS:-45}
+    WB_BROWSER_ENGINE: ${WB_BROWSER_ENGINE:-playwright}
+    WB_REQUEST_TIMEOUT_SECONDS: ${WB_REQUEST_TIMEOUT_SECONDS:-20}
+  shm_size: 256mb
+  volumes:
+    - wb_data:/app/data
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  collector:
+    <<: *app
+    image: wb-serp-collector:local
+    command: ["python", "-m", "wb_serp.cli", "worker"]
+    # Default: up to 3 × 20s timeouts + two bounded 60s retry waits.
+    stop_grace_period: 240s
+
+  dashboard:
+    <<: *app
+    image: wb-serp-dashboard:local
+    command:
+      - python
+      - -m
+      - streamlit
+      - run
+      - wb_serp/ui.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    # Not exposed on the internet by default. Use SSH tunnel or enable Caddy.
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  caddy:
+    image: caddy:2.10-alpine
+    profiles: ["public"]
+    restart: unless-stopped
+    environment:
+      - APP_DOMAIN
+      - BASIC_AUTH_HASH
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      dashboard:
+        condition: service_healthy
+
+volumes:
+  wb_data:
+  caddy_data:
+  caddy_config:

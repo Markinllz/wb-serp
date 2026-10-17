@@ -1,0 +1,16 @@
+# Standalone browser inside Docker; no Safari cookies or desktop access.
+services:
+  collector:
+    build:
+      context: .
+      target: browser
+    image: wb-serp-browser:local
+    environment:
+      WB_HTTP_TRANSPORT: browser
+      WB_BROWSER_ENGINE: cdp
+      WB_SEARCH_URL: https://www.wildberries.ru/__internal/u-search/exactmatch/ru/common/v18/search
+      WB_SESSION_FILE: ""
+      WB_BROWSER_PROFILE_PATH: /app/data/browser-profile-worker-cdp
+      WB_BROWSER_TIMEOUT_SECONDS: ${WB_BROWSER_TIMEOUT_SECONDS:-90}
+      WB_DESTINATION: ${WB_DESTINATION:-1259570991}
+    stop_grace_period: 360s

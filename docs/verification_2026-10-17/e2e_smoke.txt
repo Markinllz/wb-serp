@@ -1,0 +1,16 @@
+
+[1/5] Validate Compose syntax...
+
+[2/5] List services...
+NAME                  IMAGE                     COMMAND                  SERVICE     CREATED         STATUS                   PORTS
+wb-serp-collector-1   wb-serp-browser:local     "python -m wb_serp.c…"   collector   3 minutes ago   Up 3 minutes
+wb-serp-dashboard-1   wb-serp-dashboard:local   "python -m streamlit…"   dashboard   4 minutes ago   Up 4 minutes (healthy)   127.0.0.1:8501->8501/tcp
+
+[3/5] Check Streamlit health...
+ok
+[4/5] Check SQLite integrity and collection history...
+integrity: ok enabled queries: 70
+statuses: {'failed': 12, 'partial': 2, 'success': 136} observations: 28481 last success UTC: 2026-10-17T00:07:14.457894+00:00
+
+[5/5] Check background collector...
+PASS: dashboard, database and collector are available. No additional WB requests sent.

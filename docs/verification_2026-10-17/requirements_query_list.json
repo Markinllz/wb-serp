@@ -1,0 +1,10 @@
+{
+  "checked_at_utc": "2026-10-17T00:16:35.186245+00:00",
+  "source_url": "https://docs.google.com/spreadsheets/d/1K0m4229w_1LONgrNzWpx8lkkDcAlbdZH5ifHenZV3x8/export?format=csv",
+  "http_status": 200,
+  "source_sha256": "a8f0a10c0f4b896ded452146f4ea537d6e98d3a39fbb068e6ea2e6e174683a36",
+  "source_count": 70,
+  "configured_count": 70,
+  "exact_match": true,
+  "differences": []
+}

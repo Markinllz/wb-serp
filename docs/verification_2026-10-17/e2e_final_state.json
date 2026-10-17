@@ -1,0 +1,36 @@
+{
+  "status": "PASS",
+  "checked_at_utc": "2026-10-17T00:09:23.526785+00:00",
+  "queries_checked": 70,
+  "latest_statuses": {
+    "success": 69,
+    "partial": 1
+  },
+  "latest_positions": 13914,
+  "full_snapshot_attribute_counts": {
+    "price_rub": 13800,
+    "rating": 13800,
+    "reviews": 13800,
+    "delivery_days": 0,
+    "seller": 13800
+  },
+  "partial_queries": [
+    {
+      "query": "постельное белье евро вареный хлопок dr. hygge",
+      "observed": 114,
+      "reported_total": 114
+    }
+  ],
+  "database_counts": {
+    "collection_runs": 152,
+    "observations": 28881,
+    "product_catalog": 16268
+  },
+  "all_attempt_statuses": {
+    "failed": 12,
+    "partial": 2,
+    "success": 138
+  },
+  "integrity_check": "ok",
+  "foreign_key_check": "ok"
+}
