@@ -66,3 +66,12 @@ def test_invalid_schema_is_down_without_partial_metrics(tmp_path):
     with sqlite3.connect(path) as db:
         db.execute('CREATE TABLE unrelated (value INTEGER)')
     assert [(s.name, s.value) for s in samples(path)] == [('wb_database_up', 0)]
+
+
+def test_global_collection_controls_are_exported(tmp_path):
+    store = Store(tmp_path/'controls.db')
+    store.initialize()
+    store.set_collection_options(enabled=False, top_n=300)
+    result = samples(store.path)
+    assert next(s.value for s in result if s.name == 'wb_collection_enabled') == 0
+    assert next(s.value for s in result if s.name == 'wb_collection_top_n') == 300

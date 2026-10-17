@@ -8,6 +8,7 @@ services:
     restart: unless-stopped
     environment:
       WB_DB_PATH: /app/data/serp.db
+      WB_TOP_N: ${WB_TOP_N:-200}
     volumes:
       # mode=ro in SQLite protects data; WAL readers still need shared-memory locks.
       - wb_data:/app/data
