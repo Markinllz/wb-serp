@@ -44,4 +44,18 @@ def test_movers_chart_only_uses_observed_numeric_changes():
     chart = chart_rank_changes(products)
     assert list(chart.data[0].y) == ['2', '1']
     assert list(chart.data[0].x) == [-15, 15]
-    assert chart.data[0].customdata[0] == ['2', 5, 20]
+    assert chart.data[0].customdata[0][:3] == ['2', 5, 20]
+    assert list(chart.data[0].text) == ['↓ 15 мест', '↑ 15 мест']
+    assert '№ 5 → № 20' in chart.layout.yaxis.ticktext[0]
+
+
+def test_turnover_chart_uses_true_percent_and_explains_denominator():
+    from wb_serp.charts import chart_turnover
+    rows = [{'started_at': '2026-10-17T02:00:00+00:00',
+             'previous_at': '2026-10-17T01:00:00+00:00',
+             'percent': 25, 'entered': 50, 'retained': 150, 'depth': 200}]
+    chart = chart_turnover(rows)
+    assert list(chart.data[0].y) == [25]
+    assert chart.data[0].customdata[0][:3] == [50, 200, 150]
+    assert chart.layout.yaxis.range[0] == 0
+    assert 25 <= chart.layout.yaxis.range[1] <= 100

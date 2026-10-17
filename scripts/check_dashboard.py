@@ -93,14 +93,14 @@ def check(output: Path) -> dict:
         missing = next((row for row in store.known_products(complete['id'])
                         if row['nm_id'] not in current_ids), None)
         if missing:
-            selector = page.get_by_test_id('stExpander').filter(has_text='Изменить товары для сравнения')
+            selector = page.get_by_test_id('stExpander').filter(has_text='Выбрать товары')
             selector.locator('summary').click()
-            comparison = page.get_by_role('combobox', name='Товары для сравнения')
-            comparison.fill(str(missing['nm_id']))
-            page.get_by_role('option').filter(has_text=str(missing['nm_id'])).click()
-            comparison.press('Escape')
+            page.get_by_role('textbox', name='Название или артикул').fill(str(missing['nm_id']))
+            page.get_by_role('button', name='Найти', exact=True).click()
+            expect(page.get_by_text('Найдено товаров: 1', exact=True)).to_be_visible()
+            page.get_by_role('button', name='Добавить на график', exact=True).click()
             page.get_by_role('heading', name=complete['phrase'], exact=True).click()
-            page.wait_for_function('document.querySelector(".js-plotly-plot").data.length === 4')
+            page.wait_for_function('document.querySelector(".js-plotly-plot")?.data?.length === 4')
             selected_ids.append(missing['nm_id'])
             report['historical_product_absent_from_latest'] = missing['nm_id']
             missing_trace = plot.evaluate('''(p, id) => {
@@ -109,6 +109,22 @@ def check(output: Path) -> dict:
             }''', missing['nm_id'])
             assert None in missing_trace['positions'] and not missing_trace['connectgaps']
             report['historical_product_trace'] = missing_trace
+            # A second search must replace its old result and keep existing lines.
+            extra_id = expected[3]['nm_id']
+            page.get_by_role('textbox', name='Название или артикул').fill(str(extra_id))
+            page.get_by_role('button', name='Найти', exact=True).click()
+            expect(page.get_by_text('Найдено товаров: 1', exact=True)).to_be_visible()
+            page.get_by_role('button', name='Добавить на график', exact=True).click()
+            page.wait_for_function('document.querySelector(".js-plotly-plot")?.data?.length === 5')
+            ids = plot.evaluate('(p) => p.data.map(t=>t.meta.nm_id)')
+            assert set(ids) == {*selected_ids, extra_id}
+            selection = page.get_by_role('combobox', name='На графике')
+            selection.focus()
+            selection.press('Backspace')
+            selection.press('Escape')
+            page.wait_for_function('document.querySelector(".js-plotly-plot")?.data?.length === 4')
+            assert plot.evaluate('(p) => p.data.map(t=>t.meta.nm_id)') == selected_ids
+            report['repeated_search_add_remove'] = 'PASS'
             selector.locator('summary').click()
         settled()
         page.screenshot(path=str(output / 'history-desktop.png'), full_page=True, animations='disabled')
@@ -178,10 +194,29 @@ def check(output: Path) -> dict:
                 assert len(plotted['ids']) == min(12, len(changed))
                 assert all(delta == by_id[int(nm)]['delta'] for nm, delta in
                            zip(plotted['ids'], plotted['x'], strict=True))
+                axis_range = bars.evaluate('(p) => Array.from(p._fullLayout.yaxis.range)')
+                assert -1 <= min(axis_range) and max(axis_range) <= len(plotted['ids']) + 1
+                bars.evaluate("(el) => el.scrollIntoView({block: 'center', behavior: 'instant'})")
+                page.wait_for_timeout(300)
                 bars.screenshot(path=str(output / 'changes-chart.png'), animations='disabled')
             report['snapshot_comparison'] = {'status': 'PASS', 'rows': len(exported),
                        'entered': sum(r['change'] == 'entered' for r in comparison['products']),
                        'left': sum(r['change'] == 'left' for r in comparison['products'])}
+            changes.get_by_text('Обновление топа', exact=True).click()
+            turnover_chart = changes.locator('.js-plotly-plot')
+            expect(turnover_chart).to_be_visible()
+            page.wait_for_function("[...document.querySelectorAll('.js-plotly-plot')].some(p => p.layout.yaxis.title.text === 'Новые товары, %')")
+            turnover = store.snapshot_turnover(complete['id'], depth=expected[0]['requested_top_n'],
+                      since=since.astimezone(timezone.utc).isoformat(),
+                      until=until.astimezone(timezone.utc).isoformat())
+            values = turnover_chart.evaluate('(p) => Array.from(p.data[0].y)')
+            assert values == [r['percent'] for r in turnover]
+            settled()
+            turnover_chart.evaluate("(el) => el.scrollIntoView({block: 'center', behavior: 'instant'})")
+            page.wait_for_timeout(300)
+            turnover_chart.screenshot(path=str(output / 'turnover-chart.png'), animations='disabled')
+            report['turnover'] = {'status': 'PASS', 'comparisons': len(values)}
+            changes.get_by_text('Перемещения товаров', exact=True).click()
             changes.locator('summary').click()
             page.get_by_role('heading', name=complete['phrase'], exact=True).scroll_into_view_if_needed()
         with store.connect() as db:
@@ -232,7 +267,7 @@ def check(output: Path) -> dict:
         page.screenshot(path=str(output / 'snapshot-desktop.png'), full_page=True, animations='disabled')
 
         page.get_by_role('tab', name='Сборы').click()
-        expect(page.get_by_role('heading', name=f'Все запросы · {len(queries)}', exact=True)).to_be_visible()
+        expect(page.get_by_role('heading', name='Состояние запросов', exact=True)).to_be_visible()
         settled()
         page.screenshot(path=str(output / 'operations-desktop.png'), full_page=True, animations='disabled')
         partial = next((q for q in queries if not q['last_success'] and q['last_status'] == 'partial'), None)
@@ -264,12 +299,20 @@ def check(output: Path) -> dict:
 
         select_query(complete['phrase'])
         page.get_by_role('tab', name='Позиции').click()
-        selector = page.get_by_test_id('stExpander').filter(has_text='Изменить товары для сравнения')
+        selector = page.get_by_test_id('stExpander').filter(has_text='Выбрать товары')
         selector.locator('summary').click()
-        search = page.get_by_role('textbox', name='Поиск артикула или названия')
+        search = page.get_by_role('textbox', name='Название или артикул')
         search.fill(str(expected[0]['nm_id']))
+        page.get_by_role('button', name='Найти', exact=True).click()
+        expect(page.get_by_text('Найдено товаров: 1', exact=True)).to_be_visible()
+        search.fill('ПОСТЕЛЬНОЕ')
         search.press('Enter')
-        expect(page.get_by_text('Найдено: 1 · В истории:', exact=False)).to_be_visible()
+        expect(page.get_by_role('combobox', name='Найденные товары')).to_be_visible()
+        search.fill('неттакоготовара9876543210')
+        search.press('Enter')
+        expect(page.get_by_text('Товары не найдены.', exact=False)).to_be_visible()
+        assert plot.evaluate('(p) => p.data.length') == len(selected_ids)
+        report['catalog_search'] = {'exact_id': 'PASS', 'cyrillic_case': 'PASS', 'empty_keeps_chart': 'PASS'}
         selector.locator('summary').click()
         # All configured phrases must open their actual latest snapshot, including short catalogs.
         checked_queries = []
@@ -296,6 +339,7 @@ def check(output: Path) -> dict:
         expect(page.locator('.js-plotly-plot').first).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1')
         settled()
+        page.get_by_test_id('stMain').evaluate('(el) => el.scrollTo(0, 0)')
         page.screenshot(path=str(output / 'history-mobile.png'), full_page=True, animations='disabled')
         expect(page.locator('[data-testid="stException"]')).to_have_count(0)
         assert not errors, errors

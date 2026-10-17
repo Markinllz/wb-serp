@@ -371,22 +371,24 @@ class Store:
             ).fetchone()[0])
 
     def search_products(self, query_id: int, text: str = "", *, limit: int = 250) -> list[dict]:
-        """Bound UI options independently of potentially huge historical catalogs."""
+        """Search the entire catalog with literal, Unicode-insensitive word matching."""
         if not 1 <= limit <= 500:
             raise ValueError("Invalid catalog limit")
         term = text.strip()[:100]
-        # Escape user-supplied SQL LIKE metacharacters; never interpolate into SQL.
-        escaped = term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         with self.connect() as db:
             if term:
-                pattern = f"%{escaped}%"
-                rows = db.execute("""SELECT nm_id, last_title, last_seller, last_seen
-                    FROM product_catalog WHERE query_id=? AND (
-                        CAST(nm_id AS TEXT) LIKE ? ESCAPE '!'
-                        OR last_title LIKE ? ESCAPE '!'
-                        OR last_seller LIKE ? ESCAPE '!'
-                    ) ORDER BY last_seen DESC, nm_id LIMIT ?""",
-                    (query_id, pattern, pattern, pattern, limit)).fetchall()
+                # SQLite's built-in LIKE only folds ASCII case. Cyrillic titles
+                # need Python's Unicode casefold; е/ё are equivalent for search.
+                def normalize(value: str) -> str:
+                    return value.casefold().replace("ё", "е")
+                db.create_function("search_fold", 1, normalize, deterministic=True)
+                words = normalize(term).split()
+                field = "search_fold(CAST(nm_id AS TEXT)||' '||COALESCE(last_title,'')||' '||COALESCE(last_seller,''))"
+                conditions = " AND ".join(f"instr({field}, ?) > 0" for _ in words)
+                rows = db.execute(f"""SELECT nm_id, last_title, last_seller, last_seen
+                    FROM product_catalog WHERE query_id=? AND {conditions}
+                    ORDER BY last_seen DESC, nm_id LIMIT ?""",
+                    (query_id, *words, limit)).fetchall()
             else:
                 rows = db.execute("""SELECT nm_id, last_title, last_seller, last_seen
                     FROM product_catalog WHERE query_id=?
@@ -508,6 +510,37 @@ class Store:
              **by_key.get((r["id"], nm_id), dict.fromkeys(fields)), "run_status": r["status"]}
             for nm_id in nm_ids for r in runs
         ]
+
+    def snapshot_turnover(self, query_id: int, *, depth: int,
+                          since: str | None = None, until: str | None = None,
+                          limit_runs: int = 2200) -> list[dict]:
+        """New products between consecutive complete snapshots of one depth/region."""
+        if depth < 1 or not 1 <= limit_runs <= 5000:
+            raise ValueError("Invalid snapshot range")
+        predicates = ["query_id=?", "status='success'", "requested_top_n=?"]
+        params: list = [query_id, depth]
+        for clause, value in (("started_at>=?", since), ("started_at<=?", until)):
+            if value:
+                predicates.append(clause)
+                params.append(value)
+        with self.connect() as db:
+            rows = db.execute(f"""WITH latest AS (
+                SELECT id, started_at, destination, rowid AS run_order
+                FROM collection_runs WHERE {' AND '.join(predicates)}
+                ORDER BY started_at DESC, rowid DESC LIMIT ?
+            ), pairs AS (
+                SELECT *, lag(id) OVER w AS previous_id,
+                    lag(started_at) OVER w AS previous_at,
+                    lag(destination) OVER w AS previous_destination
+                FROM latest WINDOW w AS (ORDER BY started_at, run_order)
+            ) SELECT id AS run_id, started_at, previous_at,
+                (SELECT count(*) FROM observations n WHERE n.run_id=p.id AND NOT EXISTS
+                    (SELECT 1 FROM observations o WHERE o.run_id=p.previous_id AND o.nm_id=n.nm_id))
+                    AS entered
+                FROM pairs p WHERE previous_id IS NOT NULL AND destination=previous_destination
+                ORDER BY started_at, run_order""", (*params, limit_runs + 1)).fetchall()
+        return [{**dict(row), "depth": depth, "retained": depth - row["entered"],
+                 "percent": row["entered"] * 100 / depth} for row in rows]
 
     def compare_latest_snapshots(self, query_id: int, *, depth: int,
                                  since: str | None = None, until: str | None = None) -> dict | None:

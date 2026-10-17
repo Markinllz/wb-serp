@@ -67,3 +67,32 @@ def test_price_history_preserves_missing_product_and_missing_price(dataset):
     assert two[1]['rating'] is None and two[1]['reviews'] is None
     assert two[0]['title'] == 'Товар 20'
     assert two[0]['reviews'] == 12 and two[0]['delivery_days'] is None
+
+
+def test_turnover_uses_complete_same_depth_pairs_and_real_membership(dataset):
+    store, qid = dataset
+    rows = store.snapshot_turnover(qid, depth=3)
+    assert len(rows) == 1
+    assert rows[0]['run_id'] == 'after'
+    assert rows[0]['entered'] == 1 and rows[0]['retained'] == 2
+    assert rows[0]['percent'] == pytest.approx(100 / 3)
+    snapshot(store, qid, 'reordered', [30, 40, 20], 6)
+    snapshot(store, qid, 'replacement', [11, 12, 13], 7)
+    rows = store.snapshot_turnover(qid, depth=3)
+    assert [r['percent'] for r in rows] == [pytest.approx(100 / 3), 0, 100]
+    assert [r['run_id'] for r in store.snapshot_turnover(qid, depth=3, limit_runs=1)] == ['replacement']
+    assert store.snapshot_turnover(qid, depth=3, until='2026-10-16T02:00:00+00:00') == []
+    assert store.snapshot_turnover(store.enabled_queries()[1]['id'], depth=3) == []
+    with store.connect() as db:
+        db.execute("UPDATE collection_runs SET destination=999 WHERE id='reordered'")
+    assert len(store.snapshot_turnover(qid, depth=3)) == 1
+
+
+def test_catalog_search_folds_cyrillic_and_yo_and_matches_words_literally(dataset):
+    store, qid = dataset
+    with store.connect() as db:
+        db.execute("UPDATE product_catalog SET last_title='Постельное бельё САТИН', last_seller='Текстиль' WHERE nm_id=40")
+    for term in ('постельное', 'ПОСТЕЛЬНОЕ', 'белье', 'бельё', 'сатин белье', 'ТЕКСТИЛЬ САТИН', '40'):
+        assert [r['nm_id'] for r in store.search_products(qid, term)] == [40]
+    assert store.search_products(qid, 'белье шелк') == []
+    assert Store(store.path, readonly=True).search_products(qid, 'САТИН')[0]['nm_id'] == 40

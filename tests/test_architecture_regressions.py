@@ -154,6 +154,9 @@ def test_catalog_search_is_bounded_escapes_like_and_retains_exact_ids(tmp_path):
     assert len(store.search_products(qid)) == 250
     assert [r['nm_id'] for r in store.search_products(qid, '499')] == [499]
     assert [r['nm_id'] for r in store.search_products(qid, 'специальный')] == [499]
+    assert [r['nm_id'] for r in store.search_products(qid, 'ТЕСТ СПЕЦИАЛЬНЫЙ')] == [499]
+    assert [r['nm_id'] for r in store.search_products(qid, 'продавец%10')] == [500]
+    assert store.search_products(qid, "' OR 1=1 --") == []
     assert [r['nm_id'] for r in store.search_products(qid, '%10')] == [500]
     assert [r['nm_id'] for r in store.search_products(qid, '_специальный')] == [499]
     assert [r['nm_id'] for r in store.products_by_ids(qid, [1, 500])] == [1, 500]

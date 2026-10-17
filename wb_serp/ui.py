@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+from hashlib import sha256
 import html
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -9,10 +10,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from wb_serp.charts import PALETTE, chart_product_history, chart_rank_changes
+from wb_serp.charts import PALETTE, chart_product_history, chart_rank_changes, chart_turnover
 from wb_serp.config import Settings
 from wb_serp.store import Store
-from wb_serp.queries import read_queries
 from wb_serp.presentation import next_collection, product_summaries
 
 MSK = ZoneInfo("Europe/Moscow")
@@ -21,7 +21,7 @@ STATUS_LABELS = {
     "blocked": "Нет доступа", "running": "Идёт сбор", "interrupted": "Прерван",
 }
 
-st.set_page_config(page_title="WB SERP · Позиции", layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title="WB SERP — Позиции", layout="wide", initial_sidebar_state="auto")
 st.markdown('<style>' + (Path(__file__).parent / 'assets/dashboard.css').read_text() + '</style>',
             unsafe_allow_html=True)
 
@@ -80,28 +80,11 @@ def show_product_cards(summaries: list[dict], titles: dict, colors: dict, metric
                      f'<div class="product-footer"><span class="product-number">{shown}</span>'
                      f'<span class="product-delta {tone}">{change}</span></div>'
                      '<div class="product-hint">К предыдущему сбору в периоде</div></div>')
-    st.caption('Последние значения в выбранном периоде. Цвет карточки соответствует линии на графике.')
     st.markdown('<div class="product-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
 
 
 def show_query_management(cfg: Settings, queries: list[dict]) -> None:
     st.markdown('#### Поисковые запросы')
-    next_at = next_collection(datetime.now(timezone.utc), cfg.collection_period_seconds).astimezone(MSK)
-    st.caption(f'Изменения применятся со следующего цикла, после {next_at:%H:%M} МСК. '
-               'Пауза останавливает будущие сборы; вся история остаётся доступна.')
-    canonical = set(read_queries(cfg.queries_path))
-    preset = [q for q in queries if q['phrase'] in canonical]
-    paused = [q for q in preset if not q['enabled']]
-    if paused:
-        st.warning(f"Набор ТЗ: активно {len(preset)-len(paused)} из {len(canonical)} исходных запросов.")
-        if st.button('Включить все исходные запросы', key='restore_preset'):
-            writer = Store(cfg.database_path)
-            for query in paused:
-                writer.set_query_enabled(query['id'], True)
-            st.session_state['query_notice'] = 'Все исходные запросы включены.'
-            st.rerun()
-    else:
-        st.caption(f'Исходный набор ТЗ: {len(preset)} запросов включены.')
     with st.form('add_query', clear_on_submit=True):
         phrase = st.text_input('Новый поисковый запрос', max_chars=300,
                                placeholder='Например, постельное белье лен евро')
@@ -113,7 +96,7 @@ def show_query_management(cfg: Settings, queries: list[dict]) -> None:
             else:
                 st.session_state['pending_query_id'] = query_id
                 st.session_state['query_notice'] = (
-                    'Запрос добавлен.' if created else 'Сбор запроса возобновлён.') + f' Ближайший цикл — {next_at:%H:%M} МСК.'
+                    'Запрос добавлен.' if created else 'Сбор запроса возобновлён.')
                 st.rerun()
     st.markdown('##### Приостановить или возобновить сбор')
     options = {q['id']: q for q in queries}
@@ -127,7 +110,7 @@ def show_query_management(cfg: Settings, queries: list[dict]) -> None:
             'Запрос на паузе. История сохранена.' if target['enabled'] else 'Сбор запроса включён.')
         st.rerun()
     table = pd.DataFrame([{
-        'Запрос': q['phrase'], 'Источник': 'ТЗ' if q['phrase'] in canonical else 'Добавлен в приложении',
+        'Запрос': q['phrase'],
         'Сбор': 'Каждый час' if q['enabled'] else 'Пауза',
         'Последняя попытка': display_time(q['last_attempt']),
         'Товаров': q['last_count'],
@@ -143,22 +126,55 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     chosen_key = f"chosen_products_{query_id}"
     if chosen_key not in st.session_state:
         st.session_state[chosen_key] = [row["nm_id"] for row in latest_rows[:3]]
-    with st.expander("Изменить товары для сравнения"):
-        st.caption("По умолчанию — первые три товара последней выдачи. Выберите другие по названию или артикулу.")
-        search = st.text_input("Поиск артикула или названия", key=f"catalog_search_{query_id}",
-                               placeholder="Название товара или артикул WB")
-        matches = store.search_products(query_id, search, limit=250)
+    with st.expander("Выбрать товары"):
+        search_key = f"catalog_search_{query_id}"
+        applied_key = f"catalog_filter_{query_id}"
+        with st.form(f"find_product_{query_id}"):
+            search = st.text_input("Название или артикул", key=search_key,
+                                   placeholder="Найти товар в истории запроса")
+            if st.form_submit_button("Найти"):
+                st.session_state[applied_key] = search
+        term = st.session_state.get(applied_key, "")
+        matches = store.search_products(query_id, term, limit=250)
         retained = store.products_by_ids(query_id, st.session_state[chosen_key])
-        product_map = {p["nm_id"]: p for p in [*retained, *matches]}
+        product_map = {p["nm_id"]: p for p in [*matches, *retained]}
+
+        def product_label(nm_id: int) -> str:
+            return f"{product_map[nm_id]['last_title'] or 'Без названия'} [{nm_id}]"
+
+        if matches:
+            match_ids = [p["nm_id"] for p in matches]
+            # A fixed selectbox key can keep an obsolete formatted label when
+            # search results change. Give each result set its own widget identity.
+            fingerprint = sha256(repr([product_label(nm) for nm in match_ids]).encode()).hexdigest()[:16]
+            result_key = f"catalog_result_{query_id}_{fingerprint}"
+            found_id = st.selectbox("Найденные товары", options=match_ids,
+                                    format_func=product_label, key=result_key)
+
+            def add_to_chart(nm_id: int) -> None:
+                chosen = list(st.session_state[chosen_key])
+                if nm_id not in chosen and len(chosen) < 30:
+                    st.session_state[chosen_key] = [*chosen, nm_id]
+
+            st.button("Добавить на график", key=f"add_product_{query_id}",
+                      on_click=add_to_chart, args=(found_id,),
+                      disabled=found_id in st.session_state[chosen_key]
+                      or len(st.session_state[chosen_key]) >= 30)
+            if term:
+                st.caption(f"Найдено товаров: {len(matches)}" if len(matches) < 250
+                           else "Показаны первые 250 совпадений. Уточните поиск.")
+        else:
+            st.info("Товары не найдены. Попробуйте другое название или артикул.")
+        selection_version = sha256(repr(st.session_state[chosen_key]).encode()).hexdigest()[:16]
         selected = st.multiselect(
-            "Товары для сравнения", options=list(product_map), key=chosen_key,
-            format_func=lambda nm: f"{nm} · {(product_map[nm]['last_title'] or 'Без названия')[:90]}",
-            max_selections=30, help="До 30 артикулов из всей истории запроса",
+            "На графике", options=[p["nm_id"] for p in retained],
+            default=st.session_state[chosen_key], key=f"product_selection_{query_id}_{selection_version}",
+            format_func=lambda nm: f"{nm}: {product_map[nm]['last_title'] or 'Без названия'}",
+            max_selections=30,
         )
-        if search:
-            st.caption(f"Найдено: {len(matches)} · В истории: {product_total}")
-        elif product_total > len(matches):
-            st.caption(f"В списке {len(matches)} из {product_total} товаров. Остальные доступны через поиск.")
+        # The version applies additions to the widget while preserving removals
+        # from its client value. A fixed key would keep the old selection.
+        st.session_state[chosen_key] = selected
     depths = store.available_depths(query_id, include_partial=True)
     if not depths:
         st.info("Снимков для графика пока нет.")
@@ -200,13 +216,11 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     mode = "position" if metric == "Позиции" else "price"
     if any(row[field] is not None for row in history):
         with st.container(key="history-panel"):
-            st.caption("Позиция 1 — наверху. Наведите на точку, чтобы увидеть товар, дату и позицию."
-                       if mode == "position" else "Цена из поисковой выдачи WB. В вашем аккаунте цена может отличаться.")
             chart = chart_product_history(history, selected, metric=mode, titles=titles, color_indices=colors)
             chart.update_layout(legend={"orientation": "h", "y": -0.23, "x": 0},
                                 margin={"l": 8, "r": 8, "t": 12, "b": 30})
             st.plotly_chart(chart, width="stretch", theme=None,
-                           config={"displaylogo": False, "responsive": True, "scrollZoom": False})
+                           config={"displayModeBar": False, "responsive": True, "scrollZoom": False})
     else:
         st.info("Выбранные товары не найдены в снимках за этот период." if field == "position"
                 else "Цены выбранных товаров за этот период недоступны.")
@@ -235,21 +249,39 @@ def show_changes(store: Store, query_id: int, depth: int, start_date: date, end_
             return
         before, after = comparison["before"], comparison["after"]
         products = comparison["products"]
-        st.caption(f"Вся выдача · топ-{depth} · {display_time(before['started_at'])} → "
-                   f"{display_time(after['started_at'])}")
+        st.caption(f"{display_time(before['started_at'])} → {display_time(after['started_at'])}")
         counts = {status: sum(p["change"] == status for p in products)
-                  for status in ("up", "down", "entered", "left")}
-        st.caption(f"Выше: {counts['up']} · Ниже: {counts['down']} · "
-                   f"Вошли: {counts['entered']} · Вышли: {counts['left']}")
+                  for status in ("up", "down", "entered", "left", "unchanged")}
+        with st.container(key="movement-summary"):
+            cards = []
+            for status, label, tone in [("up", "Поднялись", "positive"),
+                                       ("down", "Опустились", "negative"),
+                                       ("entered", "Вошли в топ", ""),
+                                       ("left", "Покинули топ", "")]:
+                cards.append(f'<div class="movement-stat {tone}"><span>{label}</span>'
+                             f'<strong>{counts[status]}</strong></div>')
+            st.markdown('<div class="movement-grid">' + ''.join(cards) + '</div>',
+                        unsafe_allow_html=True)
+        st.caption(f"Без изменений: {counts['unchanged']}")
+        view = st.radio("Сравнение выдачи", ["Перемещения товаров", "Обновление топа"],
+                         horizontal=True, key=f"changes_view_{query_id}", label_visibility="collapsed")
         changed = counts["up"] + counts["down"]
-        if changed:
-            st.plotly_chart(chart_rank_changes(products), width="stretch", theme=None,
-                            config={"displaylogo": False, "responsive": True, "scrollZoom": False})
-            if changed > 12:
-                st.caption("На графике — 12 наибольших изменений. Все товары — в таблице.")
+        if view == "Перемещения товаров":
+            if changed:
+                st.plotly_chart(chart_rank_changes(products), width="stretch", theme=None,
+                                config={"displayModeBar": False, "responsive": True, "scrollZoom": False})
+                if changed > 12:
+                    st.caption("12 наибольших перемещений")
+            else:
+                st.info("Позиции оставшихся в топе товаров не изменились.")
         else:
-            st.info("У общих товаров позиции не изменились.")
-        labels = {"up": "Выше", "down": "Ниже", "entered": "Вошёл в топ",
+            turnover = store.snapshot_turnover(query_id, depth=depth,
+                        since=to_date_bound(start_date, end=False), until=to_date_bound(end_date, end=True))
+            st.markdown(f"##### Обновление топ-{depth}")
+            st.caption("Доля новых товаров относительно предыдущей полной выдачи")
+            st.plotly_chart(chart_turnover(turnover), width="stretch", theme=None,
+                            config={"displayModeBar": False, "responsive": True, "scrollZoom": False})
+        labels = {"up": "Поднялся", "down": "Опустился", "entered": "Вошёл в топ",
                   "left": "Вышел из топа", "unchanged": "Без изменений"}
         table = pd.DataFrame(products)
         table["change"] = table["change"].map(labels)
@@ -259,7 +291,6 @@ def show_changes(store: Store, query_id: int, depth: int, start_date: date, end_
                     "after": "Стало", "delta": "Изменение", "change": "Статус"})
         st.dataframe(table, hide_index=True, width="stretch", height=320, placeholder="—",
                      column_config={"Изменение": st.column_config.NumberColumn(format="%+d")})
-        st.caption("Изменение = было − стало. У вошедших и вышедших товаров числового изменения нет.")
         export = table.assign(Снимок_до=before["started_at"], Снимок_после=after["started_at"],
                                Глубина=depth, Регион=after["destination"])
         st.download_button("Скачать сравнение CSV", export.to_csv(index=False).encode("utf-8-sig"),
@@ -291,9 +322,7 @@ def main() -> None:
             st.session_state["managed_query"] = pending
         query_id = st.selectbox("Поисковый запрос", options=list(lookup), key="selected_query",
                                 format_func=lambda qid: lookup[qid]["phrase"]
-                                + (" · на паузе" if not lookup[qid]["enabled"] else ""))
-        st.caption(f"Москва · топ-{cfg.top_n}" if cfg.destination == 1259570991
-                   else f"Регион WB: {cfg.destination} · топ-{cfg.top_n}")
+                                + (" (пауза)" if not lookup[qid]["enabled"] else ""))
         st.divider()
         st.markdown("**Период графика**")
         today = datetime.now(MSK).date()
@@ -305,13 +334,8 @@ def main() -> None:
             st.rerun()
         active_count = sum(q['enabled'] for q in queries)
         next_at = next_collection(datetime.now(timezone.utc), cfg.collection_period_seconds).astimezone(MSK)
-        st.markdown(f'<div class="schedule">Следующий цикл<strong>{next_at:%H:%M} МСК</strong>'
+        st.markdown(f'<div class="schedule">Следующий сбор<strong>{next_at:%H:%M} МСК</strong>'
                     f'<span>Активных запросов: {active_count}</span></div>', unsafe_allow_html=True)
-        with st.expander("Как читать данные"):
-            st.caption(f"Время по Москве. Регион WB: {cfg.destination}.")
-            st.caption("Позиция 1 — наверху графика. Разрыв линии — нет позиции в этом снимке. "
-                       "Ошибочные сборы не участвуют в графике.")
-            st.caption("Пустые характеристики не были доступны в ответе Wildberries.")
 
     query = lookup[query_id]
     latest_rows = store.latest_observations(query_id, include_partial=True)
@@ -321,13 +345,13 @@ def main() -> None:
         notice = st.session_state.pop("query_notice", None)
         if notice:
             st.success(notice)
-        st.markdown('<div class="context">АНАЛИТИКА ВЫДАЧИ</div>', unsafe_allow_html=True)
+        st.markdown('<div class="context">ПОЗИЦИИ ТОВАРОВ</div>', unsafe_allow_html=True)
         st.markdown(f"<h1>{html.escape(query['phrase'])}</h1>", unsafe_allow_html=True)
         if not query['enabled']:
-            st.info("Сбор запроса на паузе. История доступна; возобновить сбор можно на вкладке «Запросы».")
+            st.info("Сбор на паузе")
         if latest_rows:
             latest = latest_rows[0]
-            st.caption(f"Последний сбор: {display_time(latest['started_at'])} · Топ-{latest['requested_top_n']}")
+            st.caption(f"Обновлено {display_time(latest['started_at'])}")
             if latest["run_status"] == "partial":
                 st.warning(f"Неполный сбор: {len(latest_rows)} из {latest['requested_top_n']} товаров.")
         else:
@@ -377,7 +401,7 @@ def main() -> None:
         else:
             st.info("Сохранённых товаров пока нет.")
     with operations:
-        st.markdown(f"#### Все запросы · {len(queries)}")
+        st.markdown("#### Состояние запросов")
         monitor = pd.DataFrame(queries)
         monitor["last_status"] = monitor["last_status"].map(STATUS_LABELS).fillna("Нет запусков")
         for column in ("last_attempt", "last_success"):

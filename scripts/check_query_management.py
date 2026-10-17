@@ -88,11 +88,10 @@ def main():
 
         manage(original[0]["phrase"])
         page.get_by_role("button", name="Поставить на паузу", exact=True).click()
-        expect(
-            page.get_by_text("Набор ТЗ: активно 69 из 70 исходных запросов.", exact=True)
-        ).to_be_visible()
-        page.get_by_role("button", name="Включить все исходные запросы", exact=True).click()
-        expect(page.get_by_text("Все исходные запросы включены.", exact=True)).to_be_visible()
+        expect(page.get_by_text("Запрос на паузе. История сохранена.", exact=True)).to_be_visible()
+        assert len(store.enabled_queries()) == 70
+        page.get_by_role("button", name="Возобновить сбор", exact=True).click()
+        expect(page.get_by_text("Сбор запроса включён.", exact=True)).to_be_visible()
         assert len(store.enabled_queries()) == 71
         expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state", "notRunning")
         page.screenshot(path=str(output / "queries-desktop.png"), full_page=True)
@@ -101,12 +100,16 @@ def main():
         page.reload(wait_until="domcontentloaded")
         expect(page.get_by_role("combobox", name="Поисковый запрос")).to_be_visible()
         expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state", "notRunning")
-        expect(page.get_by_text("Сбор запроса на паузе.", exact=False)).to_be_visible()
+        expect(page.get_by_text("Сбор на паузе", exact=True)).to_be_visible()
         expect(page.get_by_test_id("stException")).to_have_count(0)
         expect(page.locator(".js-plotly-plot").first).to_be_visible()
         page.get_by_role("tab", name="Запросы", exact=True).click()
-        page.get_by_role("button", name="Включить все исходные запросы", exact=True).click()
-        expect(page.get_by_text("Все исходные запросы включены.", exact=True)).to_be_visible()
+        manage(original[0]["phrase"])
+        page.get_by_role("button", name="Возобновить сбор", exact=True).click()
+        expect(page.get_by_text("Сбор запроса включён.", exact=True)).to_be_visible()
+        assert len(store.enabled_queries()) == 1
+        for query in original:
+            store.set_query_enabled(query["id"], True)
         assert len(store.enabled_queries()) == 70
         assert not next(q for q in store.queries_dashboard(include_paused=True) if q["id"] == qid)[
             "enabled"
@@ -124,7 +127,7 @@ def main():
         "pause_resume": "PASS",
         "restart_choices": "PASS",
         "duplicate": "PASS",
-        "restore_presets_keeps_custom": "PASS",
+        "pause_resume_original_query": "PASS",
         "all_paused_history_access": "PASS",
         "source_70_unchanged": True,
         "history_before": before,
