@@ -7,12 +7,17 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import json
+import logging
+from datetime import date
 import os
 from pathlib import Path
 import time
 from urllib.parse import urlparse, urlencode
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 ORIGIN = 'https://www.wildberries.ru'
 DECODED_HEADERS = {'content-encoding', 'content-length', 'transfer-encoding'}
@@ -141,8 +146,34 @@ class BrowserTransport(httpx.BaseTransport):
             raise httpx.TransportError('WB browser fetch failed or timed out', request=request) from None
         # Browser fetch has already decoded gzip/br/zstd, like curl_cffi.
         headers = [(k, v) for k, v in result['headers'] if k.lower() not in DECODED_HEADERS]
-        return httpx.Response(result['status'], headers=headers,
-                              content=base64.b64decode(result['body']), request=request)
+        body = base64.b64decode(result['body'])
+        if result['status'] == 200:
+            body = self._with_delivery(body)
+        return httpx.Response(result['status'], headers=headers, content=body, request=request)
+
+    def _with_delivery(self, body: bytes) -> bytes:
+        from wb_serp.delivery import calendar_date
+        try:
+            payload = json.loads(body)
+            products = payload.get('data', payload).get('products')
+            if not isinstance(products, list) or not products:
+                return body
+            script = (Path(__file__).parent / 'assets/delivery.js').read_text()
+            display = self._page.evaluate(script, products)
+            if not isinstance(display, dict) or len(display.get('products', [])) != len(products):
+                log.warning('WB delivery display function is unavailable; delivery remains empty')
+                return body
+            today = date.fromisoformat(display['today'])
+            for product, label in zip(products, display['products'], strict=True):
+                delivered = calendar_date(label, today)
+                if delivered:
+                    product['_wb_delivery_date'] = delivered
+            return json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        except Exception:
+            # A changed frontend cannot invalidate otherwise usable ranks and prices.
+            log.warning('WB delivery enrichment unavailable; keeping original response')
+            return body
+
 
     def close(self) -> None:
         try:

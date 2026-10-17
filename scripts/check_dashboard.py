@@ -10,6 +10,7 @@ import csv
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -75,7 +76,9 @@ def check(output: Path) -> dict:
         def select_query(phrase: str) -> None:
             chooser.fill(phrase)
             page.get_by_role('option', name=phrase, exact=True).click()
-            expect(page.get_by_role('heading', name=phrase, exact=True)).to_be_visible()
+            page.wait_for_timeout(200)
+            settled()
+            expect(chooser).to_have_attribute('aria-label', re.compile(re.escape(phrase)))
             expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')
 
         select_query(complete['phrase'])
@@ -93,13 +96,11 @@ def check(output: Path) -> dict:
         missing = next((row for row in store.known_products(complete['id'])
                         if row['nm_id'] not in current_ids), None)
         if missing:
-            selector = page.get_by_test_id('stExpander').filter(has_text='Выбрать товары')
-            selector.locator('summary').click()
             page.get_by_role('textbox', name='Название или артикул').fill(str(missing['nm_id']))
             page.get_by_role('button', name='Найти', exact=True).click()
             expect(page.get_by_text('Найдено товаров: 1', exact=True)).to_be_visible()
             page.get_by_role('button', name='Добавить на график', exact=True).click()
-            page.get_by_role('heading', name=complete['phrase'], exact=True).click()
+            page.get_by_role('heading', name='Аналитика товаров', exact=True).click()
             page.wait_for_function('document.querySelector(".js-plotly-plot")?.data?.length === 4')
             selected_ids.append(missing['nm_id'])
             report['historical_product_absent_from_latest'] = missing['nm_id']
@@ -118,14 +119,13 @@ def check(output: Path) -> dict:
             page.wait_for_function('document.querySelector(".js-plotly-plot")?.data?.length === 5')
             ids = plot.evaluate('(p) => p.data.map(t=>t.meta.nm_id)')
             assert set(ids) == {*selected_ids, extra_id}
-            selection = page.get_by_role('combobox', name='На графике')
+            selection = page.get_by_role('combobox', name='Выбранные товары')
             selection.focus()
             selection.press('Backspace')
             selection.press('Escape')
             page.wait_for_function('document.querySelector(".js-plotly-plot")?.data?.length === 4')
             assert plot.evaluate('(p) => p.data.map(t=>t.meta.nm_id)') == selected_ids
             report['repeated_search_add_remove'] = 'PASS'
-            selector.locator('summary').click()
         settled()
         page.screenshot(path=str(output / 'history-desktop.png'), full_page=True, animations='disabled')
 
@@ -218,7 +218,7 @@ def check(output: Path) -> dict:
             report['turnover'] = {'status': 'PASS', 'comparisons': len(values)}
             changes.get_by_text('Перемещения товаров', exact=True).click()
             changes.locator('summary').click()
-            page.get_by_role('heading', name=complete['phrase'], exact=True).scroll_into_view_if_needed()
+            page.get_by_role('heading', name='Аналитика товаров', exact=True).scroll_into_view_if_needed()
         with store.connect() as db:
             first = db.execute("SELECT min(started_at) FROM collection_runs "
                                "WHERE query_id=? AND status='success'", (complete['id'],)).fetchone()[0]
@@ -244,7 +244,7 @@ def check(output: Path) -> dict:
         expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
         report['empty_period_filter'] = 'PASS'
 
-        page.get_by_role('tab', name='Товары').click()
+        page.get_by_role('tab', name='Вся выдача').click()
         with page.expect_download() as download:
             page.get_by_role('button', name='Скачать выдачу CSV').click()
         snapshot_path = output / 'latest_serp.csv'
@@ -266,14 +266,16 @@ def check(output: Path) -> dict:
         settled()
         page.screenshot(path=str(output / 'snapshot-desktop.png'), full_page=True, animations='disabled')
 
-        page.get_by_role('tab', name='Сборы').click()
+        page.get_by_test_id('stSidebar').get_by_test_id('stRadio').get_by_text('Сбор данных', exact=True).click()
         expect(page.get_by_role('heading', name='Состояние запросов', exact=True)).to_be_visible()
         settled()
         page.screenshot(path=str(output / 'operations-desktop.png'), full_page=True, animations='disabled')
+        page.get_by_test_id('stSidebar').get_by_text('Аналитика', exact=True).click()
+        expect(chooser).to_be_visible()
         partial = next((q for q in queries if not q['last_success'] and q['last_status'] == 'partial'), None)
         if partial:
             select_query(partial['phrase'])
-            page.get_by_role('tab', name='Товары').click()
+            page.get_by_role('tab', name='Вся выдача').click()
             partial_rows = store.latest_observations(partial['id'], include_partial=True)
             expect(page.get_by_text(f'Неполный сбор: {len(partial_rows)} из '
                                    f'{partial_rows[0]["requested_top_n"]} товаров.', exact=True)).to_be_visible()
@@ -285,7 +287,7 @@ def check(output: Path) -> dict:
             assert [int(r['Артикул']) for r in exported] == [r['nm_id'] for r in partial_rows]
             assert [int(r['Позиция']) for r in exported] == [r['position'] for r in partial_rows]
             assert all(r['Статус'] == 'Неполный' for r in exported)
-            page.get_by_role('tab', name='Позиции').click()
+            page.get_by_role('tab', name='Динамика товаров').click()
             expect(page.locator('.js-plotly-plot').first).to_be_visible()
             markers = page.locator('.js-plotly-plot').first.evaluate(
                 '(p) => p.data.flatMap(t => Array.from(t.marker.symbol))')
@@ -298,34 +300,31 @@ def check(output: Path) -> dict:
                                          'markers': markers}
 
         select_query(complete['phrase'])
-        page.get_by_role('tab', name='Позиции').click()
-        selector = page.get_by_test_id('stExpander').filter(has_text='Выбрать товары')
-        selector.locator('summary').click()
+        page.get_by_role('tab', name='Динамика товаров').click()
         search = page.get_by_role('textbox', name='Название или артикул')
         search.fill(str(expected[0]['nm_id']))
         page.get_by_role('button', name='Найти', exact=True).click()
         expect(page.get_by_text('Найдено товаров: 1', exact=True)).to_be_visible()
         search.fill('ПОСТЕЛЬНОЕ')
         search.press('Enter')
-        expect(page.get_by_role('combobox', name='Найденные товары')).to_be_visible()
+        expect(page.get_by_role('combobox', name='Результаты поиска')).to_be_visible()
         search.fill('неттакоготовара9876543210')
         search.press('Enter')
         expect(page.get_by_text('Товары не найдены.', exact=False)).to_be_visible()
         assert plot.evaluate('(p) => p.data.length') == len(selected_ids)
         report['catalog_search'] = {'exact_id': 'PASS', 'cyrillic_case': 'PASS', 'empty_keeps_chart': 'PASS'}
-        selector.locator('summary').click()
         # All configured phrases must open their actual latest snapshot, including short catalogs.
         checked_queries = []
         for query in queries:
             select_query(query['phrase'])
             rows = store.latest_observations(query['id'], include_partial=True)
-            metric = page.get_by_test_id('stMetric').filter(has_text='В выдаче')
+            metric = page.get_by_test_id('stMetric').filter(has_text='Товаров в последней выдаче')
             expect(metric.get_by_test_id('stMetricValue')).to_have_text(str(len(rows)) if rows else '—')
             expect(page.locator('[data-testid="stException"]')).to_have_count(0)
             checked_queries.append({'query_id': query['id'], 'rows': len(rows)})
         report['query_navigation'] = checked_queries
         select_query(complete['phrase'])
-        page.get_by_role('button', name='Обновить', exact=True).click()
+        page.get_by_role('button', name='Обновить данные', exact=True).click()
         expect(page.locator('.js-plotly-plot').first).to_be_visible()
         report['refresh'] = 'PASS'
         expect(page.locator('[data-testid="stApp"]')).to_have_attribute('data-test-script-state', 'notRunning')

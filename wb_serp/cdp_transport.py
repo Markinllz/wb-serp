@@ -53,6 +53,8 @@ class CdpBrowserTransport(BrowserTransport):
             self._browser = self._playwright.chromium.connect_over_cdp(endpoint)
             self._context = self._browser.contexts[0]
             self._page = next(p for p in self._context.pages if p.url.startswith(ORIGIN))
+            self._context.new_cdp_session(self._page).send(
+                'Emulation.setTimezoneOverride', {'timezoneId': 'Europe/Moscow'})
             self._page.on('request', self._capture_headers)
             self._page.on('response', self._capture_product_response)
             self._page.set_default_timeout(self.timeout * 1000)

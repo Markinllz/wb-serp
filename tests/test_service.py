@@ -119,5 +119,5 @@ def test_migrates_legacy_schema_v1(tmp_path):
         db.commit()
     store.initialize()
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert db.execute("SELECT name FROM sqlite_master WHERE name='dataset_settings'").fetchone()

@@ -50,7 +50,7 @@ class FakeStreamlit(ModuleType):
     def stop(self): raise Stopped()
     def caption(self, *args, **kwargs): pass
     def divider(self): pass
-    def columns(self, num): return [Context() for _ in range(num)]
+    def columns(self, num, **kwargs): return [Context() for _ in range(num if isinstance(num, int) else len(num))]
     def container(self, **kwargs): return Context()
     def form(self, *args, **kwargs): return Context()
     def form_submit_button(self, *args, **kwargs): return False
@@ -58,6 +58,7 @@ class FakeStreamlit(ModuleType):
     def expander(self, *args, **kwargs): return Context()
     def tabs(self, names): return [Context() for _ in names]
     def metric(self, *args, **kwargs): pass
+    def number_input(self, *args, value=1, key=None, **kwargs): return self.session_state.get(key, value)
     def selectbox(self, *args, options, **kwargs): return options[0]
     def date_input(self, name, *, value, **kwargs): return value
     def button(self, *args, **kwargs): return False
@@ -98,8 +99,7 @@ def test_dashboard_empty_db_shows_no_queries(tmp_path, monkeypatch):
     db = tmp_path / "empty.db"
     Store(db).initialize()
     monkeypatch.setattr(app.Settings, "from_env", lambda: replace(cfg, database_path=db))
-    with pytest.raises(Stopped):
-        app.main()
+    app.main()
     assert "нет запросов" in st.messages[0][1]
 
 
@@ -130,18 +130,21 @@ def test_dashboard_complete_read_only_flow_with_charts_and_csv_exports(tmp_path,
     chart = st.plots[0]
     assert chart.layout.yaxis.autorange == "reversed"
     assert len(chart.data) == 2
-    assert len(st.exports) == 3
+    assert len(st.exports) == 4
     assert all(isinstance(blob, bytes) and len(blob) > 20 for _, blob in st.exports)
     history_csv = next(blob for label, blob in st.exports if label == "Скачать историю CSV")
     positions = [row["position"] for row in csv.DictReader(
         io.StringIO(history_csv.decode("utf-8-sig")))]
     assert set(positions) == {"", "1", "2"}
-    assert len(st.frames) >= 3
+    assert len(st.frames) >= 2
     latest = next(frame for frame in st.frames if "Цена, ₽" in frame)
     assert list(latest["Артикул"]) == [12, 13]
     assert (latest["Цена, ₽"] == 100.99).all()
+    st.session_state["view"] = "Сбор данных"
+    app.main()
     monitor = next(frame for frame in st.frames if "Последний полный" in frame)
     assert len(monitor) == 2
+    st.session_state["view"] = "Аналитика"
     st.session_state[f"history_metric_{query['id']}"] = "Цены"
     st.plots.clear()
     app.main()
@@ -170,4 +173,4 @@ def test_partial_snapshot_is_selectable_exported_and_marked(tmp_path, monkeypatc
     assert ("warning", "Неполный сбор: 1 из 200 товаров.") in st.messages
     assert list(st.frames[0]["Артикул"]) == [77]
     assert list(st.frames[0]["Статус"]) == ["Неполный"]
-    assert len(st.exports) == 2
+    assert len(st.exports) == 3

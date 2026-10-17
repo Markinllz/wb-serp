@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import datetime, timezone
+from math import ceil
 import json
 import logging
 import signal
@@ -69,6 +71,18 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
                       force: bool, scheduled_for: str | None,
                       should_stop: Callable[[], bool] | None = None,
                       runtime: WorkerHeartbeat | None = None) -> tuple[int, int, int]:
+    options = store.collection_options(cfg.top_n)
+    if not options['enabled']:
+        if runtime:
+            runtime.update('paused')
+        return 0, 0, 0
+    cfg = replace(cfg, top_n=options['top_n'], page_limit=(
+        max(cfg.page_limit, ceil(options['top_n'] / 50))
+        if options['top_n'] != cfg.top_n else cfg.page_limit))
+    external_stop = should_stop
+    def should_stop():
+        return (bool(external_stop and external_stop())
+                or not store.collection_options(cfg.top_n)['enabled'])
     slot = scheduled_for or datetime.now(timezone.utc).replace(
         minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
     queries = store.enabled_queries()
@@ -79,7 +93,7 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
     completed, skipped, failed = 0, 0, 0
     if runtime:
         runtime.update("collecting", scheduled_for=slot, query_ids=[q["id"] for q in queries],
-                       cycle_started_at=datetime.now(timezone.utc).isoformat())
+                       cycle_started_at=datetime.now(timezone.utc).isoformat(), top_n=cfg.top_n)
     with build_client(cfg) as client:
         collector = Collector(store, client, destination=cfg.destination,
                               top_n=cfg.top_n, page_limit=cfg.page_limit)
@@ -115,7 +129,8 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
     log.info("Cycle %s done: attempted=%s, skipped successful=%s, failed=%s",
              slot, completed, skipped, failed)
     if runtime:
-        runtime.update("waiting", cycle_finished_at=datetime.now(timezone.utc).isoformat())
+        runtime.update('paused' if not store.collection_options(cfg.top_n)['enabled'] else 'waiting',
+                       cycle_finished_at=datetime.now(timezone.utc).isoformat())
     return completed, skipped, failed
 
 def run_worker(cfg: Settings, store: Store) -> None:
@@ -135,18 +150,24 @@ def _run_worker(cfg: Settings, store: Store, runtime: WorkerHeartbeat) -> None:
     signal.signal(signal.SIGINT, stop)
     period = cfg.collection_period_seconds
     last_slot: int | None = int(time.time()) // period if not cfg.run_on_startup else None
-    if cfg.run_on_startup:
-        last_slot = int(time.time()) // period
-        run_cycle(cfg, store, scheduled_for=datetime.fromtimestamp(
-            last_slot * period, tz=timezone.utc).isoformat(timespec="seconds"),
-            should_stop=lambda: not running, runtime=runtime)
+    revision = store.collection_options(cfg.top_n)['revision']
+    paused = False
     while running:
+        options = store.collection_options(cfg.top_n)
         now_slot = int(time.time()) // period
-        if now_slot > (last_slot if last_slot is not None else -1):
-            last_slot = now_slot
+        if not options['enabled']:
+            if not paused:
+                runtime.update('paused')
+            paused = True
+        elif last_slot is None or now_slot > last_slot or options['revision'] != revision:
+            last_slot, revision = now_slot, options['revision']
             run_cycle(cfg, store, scheduled_for=datetime.fromtimestamp(
                 now_slot * period, tz=timezone.utc).isoformat(timespec="seconds"),
                 should_stop=lambda: not running, runtime=runtime)
+            paused = False
+        elif paused:
+            runtime.update('waiting')
+            paused = False
         if running:
             time.sleep(min(5, max(0.2, (now_slot + 1) * period - time.time())))
 

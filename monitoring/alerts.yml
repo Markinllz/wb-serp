@@ -17,7 +17,7 @@ groups:
         labels: {severity: critical}
         annotations: {summary: 'База данных недоступна для чтения'}
       - alert: CollectionStale
-        expr: time() - max by(query_id,query) ({__name__=~"wb_query_last_valid_timestamp_seconds|wb_query_enabled_since_timestamp_seconds"}) > 7200
+        expr: time() - max by(query_id,query) ({__name__=~"wb_query_last_valid_timestamp_seconds|wb_query_enabled_since_timestamp_seconds"}) > 7200 and on() (wb_collection_enabled == 1)
         for: 10m
         labels: {severity: warning}
         annotations: {summary: 'Нет свежего снимка: {{ $labels.query }}'}

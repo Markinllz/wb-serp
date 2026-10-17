@@ -60,7 +60,7 @@ def live_collection(cfg: Settings) -> tuple[dict, dict]:
         int(now.timestamp()) // cfg.collection_period_seconds * cfg.collection_period_seconds,
         timezone.utc).isoformat(timespec="seconds")
     stats = Store(cfg.database_path, readonly=True).collection_stats(
-        slot=slot, depth=cfg.top_n, query_ids=runtime.get("query_ids"))
+        slot=slot, depth=runtime.get("top_n", cfg.top_n), query_ids=runtime.get("query_ids"))
     return runtime, stats
 
 
@@ -71,9 +71,12 @@ def number(value: int) -> str:
 @st.fragment(run_every="5s")
 def show_live_status(cfg: Settings) -> None:
     runtime, stats = live_collection(cfg)
+    options = Store(cfg.database_path, readonly=True).collection_options(cfg.top_n)
     if runtime.get('alive'):
         if runtime['state'] == 'collecting':
-            label, tone = 'Идёт сбор', 'busy'
+            label, tone = ('Завершается текущий запрос' if not options['enabled'] else 'Идёт сбор'), 'busy'
+        elif not options['enabled']:
+            label, tone = 'Сбор на паузе', 'ready'
         elif stats['counts']['blocked']:
             label, tone = 'WB ограничил сбор', 'error'
         elif stats['counts']['failed'] or stats['counts']['interrupted']:
@@ -95,17 +98,18 @@ def show_live_status(cfg: Settings) -> None:
         progress += f'<p class="live-query" title="{html.escape(current)}">{html.escape(current)}</p>'
     latest = display_time(stats['last_saved_at'])
     next_at = next_collection(datetime.now(timezone.utc), cfg.collection_period_seconds).astimezone(MSK)
+    next_label = f'Следующий сбор <strong>{next_at:%H:%M} МСК</strong>' if options['enabled'] else 'Автоматический сбор приостановлен'
     st.markdown(f'<div class="live-panel"><div class="live-title">Сбор данных</div>'
                 f'<div class="live-status {tone}"><i></i>{label}</div>'
                 f'<div class="live-totals"><div><span>Наблюдений</span><strong>{number(stats["observations"])}</strong></div>'
                 f'<div><span>Товаров</span><strong>{number(stats["products"])}</strong></div></div>'
                 f'{progress}<div class="live-saved">Последнее сохранение<br>{latest}</div>'
-                f'<div class="live-next">Следующий сбор <strong>{next_at:%H:%M} МСК</strong></div></div>',
+                f'<div class="live-next">{next_label}</div></div>',
                 unsafe_allow_html=True)
 
 
 @st.fragment(run_every="10s")
-def show_collection_overview(cfg: Settings, query_id: int) -> None:
+def show_collection_overview(cfg: Settings, query_id: int | None) -> None:
     store = Store(cfg.database_path, readonly=True)
     _, stats = live_collection(cfg)
     st.markdown("#### Накопленные данные")
@@ -120,6 +124,9 @@ def show_collection_overview(cfg: Settings, query_id: int) -> None:
             st.metric(label, number(stats[field]), help=help_text)
     queries = store.queries_dashboard(include_paused=True)
     st.markdown("#### Состояние запросов")
+    if not queries:
+        st.info("Добавьте поисковый запрос в разделе «Запросы».")
+        return
     monitor = pd.DataFrame(queries)
     monitor["last_status"] = monitor["last_status"].map(STATUS_LABELS).fillna("Нет запусков")
     for column in ("last_attempt", "last_success"):
@@ -130,7 +137,7 @@ def show_collection_overview(cfg: Settings, query_id: int) -> None:
     st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний запуск", "Последний полный"]],
                  hide_index=True, width="stretch", height=350, placeholder="—")
     st.markdown("#### Запуски выбранного запроса")
-    runs = store.recent_runs(query_id, limit=200)
+    runs = store.recent_runs(query_id, limit=200) if query_id else []
     if runs:
         table = pd.DataFrame(runs)
         table["status"] = table["status"].map(STATUS_LABELS)
@@ -176,56 +183,105 @@ def show_product_cards(summaries: list[dict], titles: dict, colors: dict, metric
 
 
 def show_query_management(cfg: Settings, queries: list[dict]) -> None:
-    st.markdown('#### Поисковые запросы')
+    store = Store(cfg.database_path)
+    st.markdown('## Поисковые запросы')
     with st.form('add_query', clear_on_submit=True):
         phrase = st.text_input('Новый поисковый запрос', max_chars=300,
                                placeholder='Например, постельное белье лен евро')
         if st.form_submit_button('Добавить запрос', type='primary'):
             try:
-                query_id, created = Store(cfg.database_path).add_query(phrase)
+                query_id, created = store.add_query(phrase)
             except ValueError as exc:
                 st.error(str(exc))
             else:
                 st.session_state['pending_query_id'] = query_id
-                st.session_state['query_notice'] = (
-                    'Запрос добавлен.' if created else 'Сбор запроса возобновлён.')
+                st.session_state['query_notice'] = 'Запрос добавлен.' if created else 'Сбор запроса включён.'
                 st.rerun()
-    st.markdown('##### Приостановить или возобновить сбор')
-    options = {q['id']: q for q in queries}
-    target_id = st.selectbox('Запрос для управления', options=list(options), key='managed_query',
-                             format_func=lambda qid: options[qid]['phrase'])
-    target = options[target_id]
-    action = 'Поставить на паузу' if target['enabled'] else 'Возобновить сбор'
-    if st.button(action, key='toggle_query'):
-        Store(cfg.database_path).set_query_enabled(target_id, not bool(target['enabled']))
-        st.session_state['query_notice'] = (
-            'Запрос на паузе. История сохранена.' if target['enabled'] else 'Сбор запроса включён.')
-        st.rerun()
-    table = pd.DataFrame([{
-        'Запрос': q['phrase'],
-        'Сбор': 'Каждый час' if q['enabled'] else 'Пауза',
-        'Последняя попытка': display_time(q['last_attempt']),
-        'Товаров': q['last_count'],
-    } for q in queries])
-    st.dataframe(table, hide_index=True, width='stretch', height=440, placeholder='—')
+    if queries:
+        options = {q['id']: q for q in queries}
+        target_id = st.selectbox('Выберите запрос', options=list(options), key='managed_query',
+                                format_func=lambda qid: options[qid]['phrase'])
+        target = options[target_id]
+        first, second, third = st.columns(3)
+        with first:
+            if st.button('Открыть аналитику', key='open_query', width='stretch', type='primary'):
+                st.session_state['pending_query_id'] = target_id
+                st.session_state['pending_view'] = 'Аналитика'
+                st.rerun()
+        with second:
+            if st.button('Приостановить запрос' if target['enabled'] else 'Включить запрос',
+                         key='toggle_query', width='stretch'):
+                store.set_query_enabled(target_id, not bool(target['enabled']))
+                st.rerun()
+        with third:
+            if st.button('Удалить запрос', key='archive_query', width='stretch'):
+                store.archive_query(target_id)
+                st.session_state['query_notice'] = 'Запрос удалён из списка. Его можно восстановить ниже.'
+                st.rerun()
+        table = pd.DataFrame([{'Запрос': q['phrase'],
+            'Сбор': 'Каждый час' if q['enabled'] else 'Пауза',
+            'Последнее обновление': display_time(q['last_attempt']), 'Товаров': q['last_count']}
+            for q in queries])
+        st.dataframe(table, hide_index=True, width='stretch', height=440, placeholder='—')
+    archived = [q for q in store.queries_dashboard(include_paused=True, include_archived=True) if q['archived']]
+    if archived:
+        with st.expander('Удалённые запросы'):
+            items = {q['id']: q['phrase'] for q in archived}
+            archived_id = st.selectbox('Запрос для восстановления', options=list(items), format_func=items.get)
+            if st.button('Восстановить запрос'):
+                store.archive_query(archived_id, False)
+                st.session_state['pending_query_id'] = archived_id
+                st.session_state['query_notice'] = 'Запрос восстановлен на паузе. История доступна в аналитике.'
+                st.rerun()
+
+
+def show_collection_controls(cfg: Settings) -> None:
+    store = Store(cfg.database_path)
+    options = store.collection_options(cfg.top_n)
+    st.markdown('## Сбор данных')
+    runtime = read_worker_status(cfg.database_path)
+    if options['enabled']:
+        if st.button('Остановить сбор', type='primary', key='stop_collection'):
+            store.set_collection_options(enabled=False)
+            st.rerun()
+        st.caption('Остановка завершает текущий запрос и ставит следующие сборы на паузу.')
+    else:
+        st.info('Завершается текущий запрос.' if runtime.get('alive') and runtime.get('state') == 'collecting'
+                else 'Сбор остановлен. История доступна для просмотра.')
+        if st.button('Возобновить сбор', type='primary', key='resume_collection'):
+            store.set_collection_options(enabled=True)
+            st.rerun()
+    if 'collection_top_n' not in st.session_state:
+        st.session_state['collection_top_n'] = options['top_n']
+    with st.form('collection_depth'):
+        depth = st.number_input('Товаров на один запрос', min_value=1, max_value=1000,
+                                key='collection_top_n', step=50)
+        if st.form_submit_button('Сохранить глубину'):
+            store.set_collection_options(top_n=int(depth))
+            st.success('Глубина сохранена. Применится к следующему циклу.')
+    st.caption('Можно собирать от 1 до 1000 товаров. Если WB вернёт меньше, сохранятся доступные товары.')
 
 
 def show_history(store: Store, query_id: int, latest_rows: list[dict], product_total: int,
                  top_n: int, start_date: date | None, end_date: date | None) -> int | None:
     if not product_total:
-        st.info("Товаров пока нет. Результаты запусков — на вкладке «Сборы».")
+        st.info("Товаров пока нет. Результаты запусков доступны в разделе «Сбор данных».")
         return
     chosen_key = f"chosen_products_{query_id}"
     if chosen_key not in st.session_state:
         st.session_state[chosen_key] = [row["nm_id"] for row in latest_rows[:3]]
-    with st.expander("Выбрать товары"):
+    st.markdown("### 1. Выберите товары")
+    with st.container(key="product-picker"):
         search_key = f"catalog_search_{query_id}"
         applied_key = f"catalog_filter_{query_id}"
         with st.form(f"find_product_{query_id}"):
-            search = st.text_input("Название или артикул", key=search_key,
-                                   placeholder="Найти товар в истории запроса")
-            if st.form_submit_button("Найти"):
-                st.session_state[applied_key] = search
+            search_column, find_column = st.columns([5, 1], vertical_alignment='bottom')
+            with search_column:
+                search = st.text_input("Название или артикул", key=search_key,
+                                       placeholder="Найти товар в истории запроса")
+            with find_column:
+                if st.form_submit_button("Найти", width='stretch'):
+                    st.session_state[applied_key] = search
         term = st.session_state.get(applied_key, "")
         matches = store.search_products(query_id, term, limit=250)
         retained = store.products_by_ids(query_id, st.session_state[chosen_key])
@@ -240,18 +296,22 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
             # search results change. Give each result set its own widget identity.
             fingerprint = sha256(repr([product_label(nm) for nm in match_ids]).encode()).hexdigest()[:16]
             result_key = f"catalog_result_{query_id}_{fingerprint}"
-            found_id = st.selectbox("Найденные товары", options=match_ids,
-                                    format_func=product_label, key=result_key)
+            result_column, add_column = st.columns([4, 2], vertical_alignment='bottom')
+            with result_column:
+                found_id = st.selectbox("Результаты поиска", options=match_ids,
+                                        format_func=product_label, key=result_key)
 
             def add_to_chart(nm_id: int) -> None:
                 chosen = list(st.session_state[chosen_key])
                 if nm_id not in chosen and len(chosen) < 30:
                     st.session_state[chosen_key] = [*chosen, nm_id]
 
-            st.button("Добавить на график", key=f"add_product_{query_id}",
-                      on_click=add_to_chart, args=(found_id,),
-                      disabled=found_id in st.session_state[chosen_key]
-                      or len(st.session_state[chosen_key]) >= 30)
+            with add_column:
+                st.button("Уже выбран" if found_id in st.session_state[chosen_key] else "Добавить на график",
+                          key=f"add_product_{query_id}", width='stretch',
+                          on_click=add_to_chart, args=(found_id,),
+                          disabled=found_id in st.session_state[chosen_key]
+                          or len(st.session_state[chosen_key]) >= 30)
             if term:
                 st.caption(f"Найдено товаров: {len(matches)}" if len(matches) < 250
                            else "Показаны первые 250 совпадений. Уточните поиск.")
@@ -259,7 +319,7 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
             st.info("Товары не найдены. Попробуйте другое название или артикул.")
         selection_version = sha256(repr(st.session_state[chosen_key]).encode()).hexdigest()[:16]
         selected = st.multiselect(
-            "На графике", options=[p["nm_id"] for p in retained],
+            "Выбранные товары", options=[p["nm_id"] for p in retained],
             default=st.session_state[chosen_key], key=f"product_selection_{query_id}_{selection_version}",
             format_func=lambda nm: f"{nm}: {product_map[nm]['last_title'] or 'Без названия'}",
             max_selections=30,
@@ -296,6 +356,7 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     if not history:
         st.info("За выбранный период нет снимков. Измените период графика.")
         return chosen_depth
+    st.markdown("### 2. Динамика выбранных товаров")
     metric = st.radio("Показатель", ["Позиции", "Цены"], horizontal=True,
                        key=f"history_metric_{query_id}", label_visibility="collapsed")
     field = "position" if metric == "Позиции" else "price_kopecks"
@@ -317,12 +378,17 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
         st.info("Выбранные товары не найдены в снимках за этот период." if field == "position"
                 else "Цены выбранных товаров за этот период недоступны.")
     show_product_cards(product_summaries(history, selected, metric=mode), titles, colors, mode)
-    absent = sum(row["position"] is None and row["run_status"] == "success" for row in history)
-    partial = any(row["run_status"] == "partial" for row in history)
-    if absent and metric == "Позиции":
-        st.caption(f"Пропуски в полном топ-{chosen_depth}: {absent}.")
-    if partial:
-        st.caption("Пустой ромб — данные неполного сбора. Пропуск в нём означает отсутствие данных.")
+    latest_products = {}
+    for row in history:
+        if row['position'] is not None:
+            latest_products[row['nm_id']] = row
+    st.markdown('### 3. Характеристики выбранных товаров')
+    if latest_products:
+        attributes = snapshot_table([latest_products[nm] for nm in selected if nm in latest_products])
+        st.dataframe(attributes, column_order=['Артикул', 'Название', 'Время', 'Позиция', 'Цена, ₽',
+            'Рейтинг', 'Отзывы', 'Доставка, дни', 'Продавец'], hide_index=True, width='stretch', placeholder='—')
+        st.download_button('Скачать характеристики CSV', attributes.to_csv(index=False).encode('utf-8-sig'),
+                           'selected_products.csv', mime='text/csv', on_click='ignore')
     export = pd.DataFrame(history)
     for column in ("position", "price_kopecks", "reviews", "delivery_days"):
         export[column] = export[column].astype("Int64")
@@ -393,108 +459,102 @@ def main() -> None:
     cfg = Settings.from_env()
     store = Store(Path(cfg.database_path), readonly=True)
     if not cfg.database_path.exists():
-        st.error("База ещё не инициализирована. Запустите сборщик.")
+        st.error('База ещё не инициализирована. Запустите сборщик.')
         st.stop()
     try:
         queries = store.queries_dashboard(include_paused=True)
     except Exception as exc:
-        st.error(f"Не удалось открыть базу данных: {exc}")
+        st.error(f'Не удалось открыть базу данных: {exc}')
         st.stop()
-    if not queries:
-        st.info("Пока нет запросов. Запустите сборщик.")
-        st.stop()
-
+    lookup = {q['id']: q for q in queries}
+    if 'pending_view' in st.session_state:
+        st.session_state['view'] = st.session_state.pop('pending_view')
+    if 'pending_query_id' in st.session_state:
+        pending = st.session_state.pop('pending_query_id')
+        if pending in lookup:
+            st.session_state['selected_query'] = pending
+            st.session_state['managed_query'] = pending
+    for key in ('selected_query', 'managed_query'):
+        if st.session_state.get(key) not in lookup:
+            st.session_state.pop(key, None)
+        else:
+            # Keep selections when their widgets are absent on another page.
+            st.session_state[key] = st.session_state[key]
     with st.sidebar:
         st.markdown('<div class="brand"><div class="brand-mark">WB</div><div><strong>SERP</strong>'
                     '<small>Позиции и динамика товаров</small></div></div>', unsafe_allow_html=True)
-        lookup = {q["id"]: q for q in queries}
-        if "pending_query_id" in st.session_state:
-            pending = st.session_state.pop("pending_query_id")
-            st.session_state["selected_query"] = pending
-            st.session_state["managed_query"] = pending
-        query_id = st.selectbox("Поисковый запрос", options=list(lookup), key="selected_query",
-                                format_func=lambda qid: lookup[qid]["phrase"]
-                                + (" (пауза)" if not lookup[qid]["enabled"] else ""))
+        view = st.radio('Раздел', ['Аналитика', 'Запросы', 'Сбор данных'], key='view', label_visibility='collapsed')
         st.divider()
-        st.markdown("**Период графика**")
-        today = datetime.now(MSK).date()
-        start_date = st.date_input("График с", value=today - timedelta(days=14),
-                                   key="history_start", max_value=today, format="DD.MM.YYYY")
-        end_date = st.date_input("По", value=today, key="history_end",
-                                 max_value=today, format="DD.MM.YYYY")
-        if st.button("Обновить", width="stretch", help="Перечитать сохранённые данные"):
-            st.rerun()
         show_live_status(cfg)
-
+        if st.button('Обновить данные', width='stretch'):
+            st.rerun()
+    notice = st.session_state.pop('query_notice', None)
+    if notice:
+        st.success(notice)
+    if view == 'Запросы':
+        show_query_management(cfg, queries)
+        return
+    if view == 'Сбор данных':
+        show_collection_controls(cfg)
+        qid = st.session_state.get('selected_query', next(iter(lookup), None))
+        show_collection_overview(cfg, qid)
+        return
+    st.markdown('## Аналитика товаров')
+    if not queries:
+        st.info('Пока нет запросов. Добавьте первый в разделе «Запросы».')
+        return
+    query_id = st.selectbox('Поисковый запрос', options=list(lookup), key='selected_query',
+                            format_func=lambda qid: lookup[qid]['phrase']
+                            + (' (пауза)' if not lookup[qid]['enabled'] else ''))
     query = lookup[query_id]
     latest_rows = store.latest_observations(query_id, include_partial=True)
     runs = store.recent_runs(query_id, limit=200)
     product_total = store.product_count(query_id)
-    with st.container(key="query-header"):
-        notice = st.session_state.pop("query_notice", None)
-        if notice:
-            st.success(notice)
-        st.markdown('<div class="context">ПОЗИЦИИ ТОВАРОВ</div>', unsafe_allow_html=True)
-        st.markdown(f"<h1>{html.escape(query['phrase'])}</h1>", unsafe_allow_html=True)
-        if not query['enabled']:
-            st.info("Сбор на паузе")
-        if latest_rows:
-            latest = latest_rows[0]
-            st.caption(f"Обновлено {display_time(latest['started_at'])}")
-            if latest["run_status"] == "partial":
-                st.warning(f"Неполный сбор: {len(latest_rows)} из {latest['requested_top_n']} товаров.")
-        else:
-            st.caption("Ожидается первый сбор")
-        if runs and runs[0]["status"] in ("failed", "blocked", "interrupted"):
-            st.warning("Последняя попытка сбора не завершена. Подробности — на вкладке «Сборы».")
-        elif runs and runs[0]["status"] == "partial" and runs[0]["observed_count"] == 0:
-            st.warning("Последний сбор не вернул товаров. Подробности — на вкладке «Сборы».")
-
-        with st.container(key="summary"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("В выдаче", str(len(latest_rows)) if latest_rows else "—",
-                          help="Товаров в последнем сохранённом снимке")
-            with c2:
-                st.metric("В истории", f"{product_total:,}".replace(",", " "),
-                          help="Уникальных артикулов за всё время")
-            with c3:
-                st.metric("Сборов", str(store.count_history_runs(query_id, include_partial=True)))
-
-    overview, snapshot, operations, management = st.tabs(["Позиции", "Товары", "Сборы", "Запросы"])
+    if not query['enabled']:
+        st.info('Сбор этого запроса на паузе.')
+    if latest_rows:
+        latest = latest_rows[0]
+        st.caption(f"Обновлено {display_time(latest['started_at'])}")
+        if latest['run_status'] == 'partial':
+            st.warning(f"Неполный сбор: {len(latest_rows)} из {latest['requested_top_n']} товаров.")
+    if runs and runs[0]['status'] in ('failed', 'blocked', 'interrupted'):
+        st.warning('Последняя попытка не завершена. Подробности в разделе «Сбор данных».')
+    with st.container(key='summary'):
+        for column, label, value in zip(st.columns(3), ['Товаров в последней выдаче', 'Товаров за всё время', 'Сохранённых выдач'],
+                [len(latest_rows) if latest_rows else '—', number(product_total),
+                 store.count_history_runs(query_id, include_partial=True)], strict=True):
+            with column:
+                st.metric(label, value)
+    overview, snapshot = st.tabs(['Динамика товаров', 'Вся выдача'])
     with overview:
-        depth = show_history(store, query_id, latest_rows, product_total, cfg.top_n, start_date, end_date)
+        today = datetime.now(MSK).date()
+        left, right = st.columns(2)
+        with left:
+            start_date = st.date_input('График с', value=today - timedelta(days=14), key='history_start',
+                                      max_value=today, format='DD.MM.YYYY')
+        with right:
+            end_date = st.date_input('По', value=today, key='history_end', max_value=today, format='DD.MM.YYYY')
+        depth = show_history(store, query_id, latest_rows, product_total,
+                             store.collection_options(cfg.top_n)['top_n'], start_date, end_date)
         if depth is not None and start_date is not None and end_date is not None and start_date <= end_date:
             show_changes(store, query_id, depth, start_date, end_date)
     with snapshot:
-        st.markdown("#### Последняя выдача")
-        st.caption("Нажмите на ссылку в таблице, чтобы открыть товар на Wildberries.")
+        st.markdown('### Последняя выдача')
         if latest_rows:
             table = snapshot_table(latest_rows)
-            display = table.assign(Товар=table["Артикул"].map(lambda nm: f"https://www.wildberries.ru/catalog/{nm}/detail.aspx"))
-            st.dataframe(display, column_order=["Позиция", "Артикул", "Название", "Цена, ₽", "Рейтинг",
-                         "Отзывы", "Доставка, дни", "Продавец", "Товар"], width="stretch", hide_index=True,
-                         height=560, placeholder="—", column_config={
-                "Товар": st.column_config.LinkColumn(display_text="Открыть ↗"),
-                "Позиция": st.column_config.NumberColumn(format="%d", width="small"),
-                "Артикул": st.column_config.NumberColumn(format="%d"),
-                "Название": st.column_config.TextColumn(width="medium"),
-                "Продавец": st.column_config.TextColumn(width="medium"),
-                "Цена, ₽": st.column_config.NumberColumn(format="%.2f ₽"),
-                "Рейтинг": st.column_config.NumberColumn(format="%.1f"),
-                "Отзывы": st.column_config.NumberColumn(format="%d"),
-                "Доставка, дни": st.column_config.NumberColumn(format="%d"),
-            })
-            st.download_button("Скачать выдачу CSV", table.to_csv(index=False).encode("utf-8-sig"),
-                               "latest_serp.csv", mime="text/csv", on_click="ignore")
+            display = table.assign(Товар=table['Артикул'].map(lambda nm: f'https://www.wildberries.ru/catalog/{nm}/detail.aspx'))
+            st.dataframe(display, column_order=['Позиция', 'Артикул', 'Название', 'Цена, ₽', 'Рейтинг',
+                'Отзывы', 'Доставка, дни', 'Продавец', 'Товар'], width='stretch', hide_index=True,
+                height=560, placeholder='—', column_config={
+                    'Товар': st.column_config.LinkColumn(display_text='Открыть ↗'),
+                    'Артикул': st.column_config.NumberColumn(format='%d'),
+                    'Цена, ₽': st.column_config.NumberColumn(format='%.2f ₽'),
+                    'Доставка, дни': st.column_config.NumberColumn(format='%d')})
+            st.download_button('Скачать выдачу CSV', table.to_csv(index=False).encode('utf-8-sig'),
+                               'latest_serp.csv', mime='text/csv', on_click='ignore')
         else:
-            st.info("Сохранённых товаров пока нет.")
-    with operations:
-        show_collection_overview(cfg, query_id)
-
-    with management:
-        show_query_management(cfg, queries)
+            st.info('Сохранённых товаров пока нет.')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -59,8 +59,8 @@ def _price(item: Mapping[str, Any]) -> Decimal | None:
 
 
 def _delivery(item: Mapping[str, Any], collected_at: datetime) -> int | None:
-    # Explicit date only. The WB 'time1'/'time2' codes aren't calendar-day dates.
-    raw = item.get("deliveryDate")
+    # Explicit date, or the date obtained from WB's frontend delivery display.
+    raw = item.get("deliveryDate", item.get("_wb_delivery_date"))
     if not isinstance(raw, str):
         return None
     try:

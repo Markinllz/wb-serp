@@ -14,7 +14,7 @@ from typing import Iterator, Sequence
 
 from wb_serp.models import Product, RunStatus
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def iso(value: datetime) -> str:
@@ -64,7 +64,7 @@ class Store:
             if version == SCHEMA_VERSION:
                 self._assert_schema(db)
                 return
-            if version not in (0, 1, 2, 3):
+            if version not in (0, 1, 2, 3, 4):
                 raise RuntimeError(f"Unsupported schema migration from {version}")
             if version == 0:
                 db.executescript("""
@@ -133,6 +133,12 @@ class Store:
                 if columns:
                     db.execute('UPDATE search_queries SET enabled_since=? WHERE enabled_since=0',
                                (datetime.now(timezone.utc).timestamp(),))
+            if version < 5:
+                if not db.in_transaction:
+                    db.execute('BEGIN IMMEDIATE')
+                columns = {r['name'] for r in db.execute('PRAGMA table_info(search_queries)')}
+                if columns and 'archived' not in columns:
+                    db.execute('ALTER TABLE search_queries ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))')
             self._assert_schema(db)
             if version < 3:
                 # Version 2 omitted valid short catalogs from product selection.
@@ -164,7 +170,7 @@ class Store:
     def _assert_schema(db: sqlite3.Connection) -> None:
         """Fail loudly on partially migrated or manually damaged databases."""
         required = {
-            "search_queries": {"id", "phrase", "enabled", "display_order", "enabled_since"},
+            "search_queries": {"id", "phrase", "enabled", "display_order", "enabled_since", "archived"},
             "collection_runs": {"id", "query_id", "scheduled_for", "status", "requested_top_n", "destination"},
             "observations": {"run_id", "nm_id", "position", "price_kopecks"},
             "product_catalog": {"query_id", "nm_id", "first_seen", "last_seen"},
@@ -199,7 +205,7 @@ class Store:
             for order, phrase in enumerate(phrases, start=1):
                 update = "display_order=excluded.display_order"
                 if not preserve_choices:
-                    update += ", enabled=1, enabled_since=excluded.enabled_since"
+                    update += ", enabled=1, archived=0, enabled_since=excluded.enabled_since"
                 db.execute(f"""INSERT INTO search_queries(phrase, display_order, enabled, enabled_since)
                     VALUES(?, ?, 1, ?) ON CONFLICT(phrase) DO UPDATE SET {update}""",
                     (phrase, order, datetime.now(timezone.utc).timestamp()))
@@ -215,11 +221,11 @@ class Store:
             raise ValueError("Уберите пробелы в начале и конце запроса.")
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            existing = db.execute('SELECT id, enabled FROM search_queries WHERE phrase=?', (phrase,)).fetchone()
+            existing = db.execute('SELECT id, enabled, archived FROM search_queries WHERE phrase=?', (phrase,)).fetchone()
             if existing:
                 if existing['enabled']:
                     raise ValueError("Этот запрос уже собирается.")
-                db.execute('UPDATE search_queries SET enabled=1,enabled_since=? WHERE id=?',
+                db.execute('UPDATE search_queries SET enabled=1,archived=0,enabled_since=? WHERE id=?',
                            (datetime.now(timezone.utc).timestamp(), existing['id']))
                 return existing['id'], False
             result = db.execute('''INSERT INTO search_queries (phrase,display_order,enabled,enabled_since)
@@ -236,13 +242,46 @@ class Store:
         with self.connect() as db:
             result = db.execute('''UPDATE search_queries SET enabled=?,
                 enabled_since=CASE WHEN enabled=0 AND ?=1 THEN ? ELSE enabled_since END
-                WHERE id=?''', (int(enabled), int(enabled), datetime.now(timezone.utc).timestamp(), query_id))
+                WHERE id=? AND archived=0''', (int(enabled), int(enabled), datetime.now(timezone.utc).timestamp(), query_id))
             if not result.rowcount:
                 raise ValueError("Запрос не найден. Обновите список.")
 
     def enabled_queries(self) -> list[sqlite3.Row]:
         with self.connect() as db:
-            return db.execute("SELECT id, phrase FROM search_queries WHERE enabled=1 ORDER BY display_order").fetchall()
+            return db.execute("SELECT id, phrase FROM search_queries WHERE enabled=1 AND archived=0 ORDER BY display_order").fetchall()
+
+    def archive_query(self, query_id: int, archived: bool = True) -> None:
+        if self.readonly or not isinstance(archived, bool):
+            raise ValueError('Cannot change query archive state')
+        with self.connect() as db:
+            result = db.execute('UPDATE search_queries SET archived=?,enabled=0 WHERE id=?',
+                                (int(archived), query_id))
+            if not result.rowcount:
+                raise ValueError('Запрос не найден')
+
+    def collection_options(self, default_top_n: int = 200) -> dict:
+        with self.connect() as db:
+            values = dict(db.execute("SELECT key,value FROM dataset_settings WHERE key IN ('collection_enabled','top_n','resume_revision')"))
+        return {'enabled': values.get('collection_enabled', '1') == '1',
+                'top_n': int(values.get('top_n', default_top_n)),
+                'revision': int(values.get('resume_revision', 0))}
+
+    def set_collection_options(self, *, enabled: bool | None = None, top_n: int | None = None) -> None:
+        if self.readonly:
+            raise ValueError('Read-only store cannot change collection settings')
+        if enabled is not None and type(enabled) is not bool:
+            raise ValueError('Enabled must be a boolean')
+        if top_n is not None and (type(top_n) is not int or not 1 <= top_n <= 1000):
+            raise ValueError('Выберите от 1 до 1000 товаров')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if enabled is not None:
+                previous = db.execute("SELECT value FROM dataset_settings WHERE key='collection_enabled'").fetchone()
+                if enabled and previous and previous['value'] == '0':
+                    db.execute("INSERT INTO dataset_settings(key,value) VALUES('resume_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)")
+                db.execute("INSERT INTO dataset_settings(key,value) VALUES('collection_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(int(enabled)),))
+            if top_n is not None:
+                db.execute("INSERT INTO dataset_settings(key,value) VALUES('top_n',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(top_n),))
 
     def has_completed_slot(self, query_id: int, scheduled_for: str,
                            requested_top_n: int | None = None) -> bool:
@@ -333,9 +372,9 @@ class Store:
                     for p in products
                 ])
 
-    def queries_dashboard(self, *, include_paused: bool = False) -> list[dict]:
+    def queries_dashboard(self, *, include_paused: bool = False, include_archived: bool = False) -> list[dict]:
         with self.connect() as db:
-            rows = db.execute("""SELECT q.id, q.phrase, q.display_order, q.enabled, q.enabled_since,
+            rows = db.execute("""SELECT q.id, q.phrase, q.display_order, q.enabled, q.enabled_since, q.archived,
                 (SELECT status FROM collection_runs r WHERE r.query_id=q.id
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_status,
                 (SELECT started_at FROM collection_runs r WHERE r.query_id=q.id
@@ -344,8 +383,8 @@ class Store:
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_success,
                 (SELECT observed_count FROM collection_runs r WHERE r.query_id=q.id
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_count
-                FROM search_queries q WHERE (? OR q.enabled=1) ORDER BY q.display_order,q.id""",
-                (include_paused,)).fetchall()
+                FROM search_queries q WHERE (? OR q.enabled=1) AND (? OR q.archived=0) ORDER BY q.display_order,q.id""",
+                (include_paused, include_archived)).fetchall()
         return [dict(row) for row in rows]
 
     def collection_stats(self, *, slot: str, depth: int,

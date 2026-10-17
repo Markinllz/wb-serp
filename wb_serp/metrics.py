@@ -33,6 +33,9 @@ class DatabaseMetrics:
                                          timeout=3)) as db:
                 db.execute('PRAGMA query_only=ON')
                 db.execute('BEGIN')
+                settings = dict(db.execute("SELECT key,value FROM dataset_settings WHERE key IN ('collection_enabled','top_n')"))
+                metrics.append(GaugeMetricFamily('wb_collection_enabled', 'Global collection enabled', value=int(settings.get('collection_enabled', 1))))
+                metrics.append(GaugeMetricFamily('wb_collection_top_n', 'Configured collection depth', value=int(settings.get('top_n', os.environ.get('WB_TOP_N', 200)))))
                 enabled = db.execute('SELECT count(*) FROM search_queries WHERE enabled=1').fetchone()[0]
                 metrics.append(GaugeMetricFamily('wb_queries_enabled', 'Configured active queries', value=enabled))
                 for table in ('observations', 'collection_runs', 'product_catalog'):

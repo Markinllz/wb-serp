@@ -62,7 +62,7 @@ def main():
             expect(page.locator('.live-totals strong').first).to_have_text(f'{before+2:,}'.replace(',', ' '))
         expect(page.locator('.live-status')).to_have_text('Сборщик остановлен')
         expect(chart).to_have_attribute('data-zoom-proof', 'preserved')
-        page.get_by_role('tab', name='Сборы', exact=True).click()
+        page.get_by_test_id('stSidebar').get_by_text('Сбор данных', exact=True).first.click()
         metric = page.get_by_test_id('stMetric').filter(has_text='Наблюдений')
         expect(metric.get_by_test_id('stMetricValue')).to_have_text(f'{before+2:,}'.replace(',', ' '))
         expect(page.get_by_test_id('stException')).to_have_count(0)
