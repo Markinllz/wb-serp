@@ -41,12 +41,16 @@ def to_date_bound(d: date, *, end: bool) -> str:
 def snapshot_table(rows: list[dict]) -> pd.DataFrame:
     table = pd.DataFrame(rows)
     table["price_rub"] = table.pop("price_kopecks") / 100
+    table['card_price_rub'] = table.pop('card_price_kopecks') / 100
+    table['card_price_kind'] = table['card_price_kind'].map(
+        {'wallet':'С WB Кошельком', 'displayed':'Не указаны'})
     table["started_at"] = table["started_at"].map(display_time)
     table["run_status"] = table["run_status"].map(STATUS_LABELS)
     for column in ("position", "nm_id", "reviews", "delivery_days"):
         table[column] = table[column].astype("Int64")
     return table.rename(columns={
-        "position": "Позиция", "nm_id": "Артикул", "title": "Название", "price_rub": "Цена, ₽",
+        "position": "Позиция", "nm_id": "Артикул", "title": "Название", "price_rub": "Без Кошелька, ₽",
+        "card_price_rub": "Цена на WB, ₽", "card_price_kind": "Условия цены",
         "rating": "Рейтинг", "reviews": "Отзывы", "delivery_days": "Доставка, дни",
         "seller": "Продавец", "started_at": "Время", "requested_top_n": "Глубина",
         "run_status": "Статус",
@@ -363,7 +367,15 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     st.markdown("### 2. Динамика выбранных товаров")
     metric = st.radio("Показатель", ["Позиции", "Цены"], horizontal=True,
                        key=f"history_metric_{query_id}", label_visibility="collapsed")
-    field = "position" if metric == "Позиции" else "price_kopecks"
+    price_field = 'price_kopecks'
+    if metric == 'Цены':
+        basis = st.radio('Цена', ['На карточке WB', 'Без WB Кошелька'], horizontal=True,
+                         index=0 if any(r.get('card_price_kopecks') is not None for r in history) else 1,
+                         key=f'price_basis_{query_id}')
+        price_field = 'card_price_kopecks' if basis == 'На карточке WB' else 'price_kopecks'
+        if price_field == 'card_price_kopecks' and any(r.get('card_price_kind') == 'wallet' for r in history):
+            st.caption('Цена с WB Кошельком действует при оплате Кошельком.')
+    field = "position" if metric == "Позиции" else price_field
     color_key = f"product_colors_{query_id}"
     colors = st.session_state.setdefault(color_key, {})
     for nm_id in selected:
@@ -373,7 +385,7 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     mode = "position" if metric == "Позиции" else "price"
     if any(row[field] is not None for row in history):
         with st.container(key="history-panel"):
-            chart = chart_product_history(history, selected, metric=mode, titles=titles, color_indices=colors)
+            chart = chart_product_history(history, selected, metric=mode, titles=titles, color_indices=colors, price_field=price_field)
             chart.update_layout(legend={"orientation": "h", "y": -0.23, "x": 0},
                                 margin={"l": 8, "r": 8, "t": 12, "b": 30})
             st.plotly_chart(chart, width="stretch", theme=None,
@@ -381,7 +393,7 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     else:
         st.info("Выбранные товары не найдены в снимках за этот период." if field == "position"
                 else "Цены выбранных товаров за этот период недоступны.")
-    show_product_cards(product_summaries(history, selected, metric=mode), titles, colors, mode)
+    show_product_cards(product_summaries(history, selected, metric=mode, price_field=price_field), titles, colors, mode)
     latest_products = {}
     for row in history:
         if row['position'] is not None:
@@ -389,12 +401,12 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     st.markdown('### 3. Характеристики выбранных товаров')
     if latest_products:
         attributes = snapshot_table([latest_products[nm] for nm in selected if nm in latest_products])
-        st.dataframe(attributes, column_order=['Артикул', 'Название', 'Время', 'Позиция', 'Цена, ₽',
+        st.dataframe(attributes, column_order=['Артикул', 'Название', 'Время', 'Позиция', 'Цена на WB, ₽', 'Условия цены', 'Без Кошелька, ₽',
             'Рейтинг', 'Отзывы', 'Доставка, дни', 'Продавец'], hide_index=True, width='stretch', placeholder='—')
         st.download_button('Скачать характеристики CSV', attributes.to_csv(index=False).encode('utf-8-sig'),
                            'selected_products.csv', mime='text/csv', on_click='ignore')
     export = pd.DataFrame(history)
-    for column in ("position", "price_kopecks", "reviews", "delivery_days"):
+    for column in ("position", "price_kopecks", "card_price_kopecks", "reviews", "delivery_days"):
         export[column] = export[column].astype("Int64")
     export["started_at"] = export["started_at"].map(display_time)
     st.download_button("Скачать историю CSV", export.to_csv(index=False).encode("utf-8-sig"),
@@ -547,12 +559,13 @@ def main() -> None:
         if latest_rows:
             table = snapshot_table(latest_rows)
             display = table.assign(Товар=table['Артикул'].map(lambda nm: f'https://www.wildberries.ru/catalog/{nm}/detail.aspx'))
-            st.dataframe(display, column_order=['Позиция', 'Артикул', 'Название', 'Цена, ₽', 'Рейтинг',
+            st.dataframe(display, column_order=['Позиция', 'Артикул', 'Название', 'Цена на WB, ₽', 'Условия цены', 'Без Кошелька, ₽', 'Рейтинг',
                 'Отзывы', 'Доставка, дни', 'Продавец', 'Товар'], width='stretch', hide_index=True,
                 height=560, placeholder='—', column_config={
                     'Товар': st.column_config.LinkColumn(display_text='Открыть ↗'),
                     'Артикул': st.column_config.NumberColumn(format='%d'),
-                    'Цена, ₽': st.column_config.NumberColumn(format='%.2f ₽'),
+                    'Цена на WB, ₽': st.column_config.NumberColumn(format='%.2f ₽'),
+                    'Без Кошелька, ₽': st.column_config.NumberColumn(format='%.2f ₽'),
                     'Доставка, дни': st.column_config.NumberColumn(format='%d')})
             st.download_button('Скачать выдачу CSV', table.to_csv(index=False).encode('utf-8-sig'),
                                'latest_serp.csv', mime='text/csv', on_click='ignore')

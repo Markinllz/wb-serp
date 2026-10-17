@@ -67,6 +67,7 @@ def check(output: Path) -> dict:
         page.on('pageerror', lambda error: errors.append(str(error)))
 
         def settled():
+            page.wait_for_timeout(200)
             expect(page.get_by_test_id('stApp')).to_have_attribute('data-test-script-state', 'notRunning')
             expect(page.locator('[data-stale="true"]')).to_have_count(0)
         page.goto('http://127.0.0.1:8501', wait_until='domcontentloaded')
@@ -154,6 +155,9 @@ def check(output: Path) -> dict:
         assert [int(r['price_kopecks']) if r['price_kopecks'] else None for r in history] == [
             r['price_kopecks'] for r in expected_history]
         page.get_by_test_id('stRadio').get_by_text('Цены', exact=True).click()
+        settled()
+        page.get_by_test_id('stRadio').get_by_text('Без WB Кошелька', exact=True).click()
+        settled()
         page.wait_for_function('document.querySelector(".js-plotly-plot").layout.yaxis.title.text === "Цена, ₽"')
         price_traces = plot.evaluate('(p) => p.data.map(t => ({id:String(t.meta.nm_id), values:Array.from(t.y), gaps:t.connectgaps}))')
         for trace in price_traces:
@@ -166,6 +170,7 @@ def check(output: Path) -> dict:
         report['price_history'] = {'status': 'PASS', 'products': len(price_traces)}
         page.get_by_test_id('stRadio').get_by_text('Позиции', exact=True).click()
         page.wait_for_function('document.querySelector(".js-plotly-plot").layout.yaxis.title.text === "Позиция"')
+        settled()
         changes = page.get_by_test_id('stExpander').filter(has_text='Изменения выдачи')
         comparison = store.compare_latest_snapshots(complete['id'], depth=expected[0]['requested_top_n'],
                       since=since.astimezone(timezone.utc).isoformat(),
@@ -254,7 +259,7 @@ def check(output: Path) -> dict:
         for row, source in zip(snapshot, expected, strict=True):
             assert int(row['Позиция']) == source['position']
             assert int(row['Артикул']) == source['nm_id']
-            price = Decimal(row['Цена, ₽']) if row['Цена, ₽'] else None
+            price = Decimal(row['Без Кошелька, ₽']) if row['Без Кошелька, ₽'] else None
             assert price == (Decimal(source['price_kopecks']) / 100
                              if source['price_kopecks'] is not None else None)
             for label, field in [('Название', 'title'), ('Продавец', 'seller')]:

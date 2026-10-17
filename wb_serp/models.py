@@ -19,6 +19,8 @@ class Product:
     delivery_days: int | None
     seller: str | None
     title: str | None
+    card_price_rub: Decimal | None = None
+    card_price_kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

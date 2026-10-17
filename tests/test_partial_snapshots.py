@@ -62,7 +62,7 @@ def test_v2_catalog_migration_preserves_observations_and_newer_titles(tmp_path):
     assert catalog[20]['last_title'] == 'new-short 20'
     assert catalog[50]['last_title'] == 'new-short 50'
     with readonly.connect() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 5
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 6
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         after = {t: [tuple(r) for r in db.execute(f'SELECT * FROM {t} ORDER BY rowid')]
                  for t in before}

@@ -88,7 +88,7 @@ def test_v4_migration_preserves_history_and_default_controls(tmp_path):
     store.initialize()
     with store.connect() as db:
         assert [tuple(r) for r in db.execute('SELECT id,phrase,enabled,enabled_since FROM search_queries')] == before
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 5
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 6
     assert store.collection_options() == {'enabled': True, 'top_n': 200, 'revision': 0}
     for bad in (0, 1001, True, 3.5):
         with pytest.raises(ValueError):

@@ -46,3 +46,18 @@ def test_cdp_close_releases_all_resources_even_after_cleanup_error(tmp_path):
     transport.close()
     assert calls == ['browser', 'sb', 'display']
     assert transport._lock is None
+
+
+def test_cdp_returns_the_captured_frontend_page_without_replaying_api(tmp_path):
+    import base64
+    import json
+    import httpx
+    import pytest
+    transport = CdpBrowserTransport(profile_path=tmp_path)
+    transport._rendered_destination = '99'
+    transport._frontend_pages = {1:{'products':[{'id':701}]}}
+    request = httpx.Request('GET', ENDPOINT, params={'dest':99,'page':1})
+    response = transport._fetch_frontend_page(request)
+    assert json.loads(base64.b64decode(response['body'])) == {'products':[{'id':701}]}
+    with pytest.raises(httpx.TransportError, match='region'):
+        transport._fetch_frontend_page(httpx.Request('GET', ENDPOINT, params={'dest':100}))

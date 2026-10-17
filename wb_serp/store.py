@@ -14,7 +14,7 @@ from typing import Iterator, Sequence
 
 from wb_serp.models import Product, RunStatus
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def iso(value: datetime) -> str:
@@ -64,7 +64,7 @@ class Store:
             if version == SCHEMA_VERSION:
                 self._assert_schema(db)
                 return
-            if version not in (0, 1, 2, 3, 4):
+            if version not in (0, 1, 2, 3, 4, 5):
                 raise RuntimeError(f"Unsupported schema migration from {version}")
             if version == 0:
                 db.executescript("""
@@ -139,6 +139,14 @@ class Store:
                 columns = {r['name'] for r in db.execute('PRAGMA table_info(search_queries)')}
                 if columns and 'archived' not in columns:
                     db.execute('ALTER TABLE search_queries ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))')
+            if version < 6:
+                if not db.in_transaction:
+                    db.execute('BEGIN IMMEDIATE')
+                columns = {r['name'] for r in db.execute('PRAGMA table_info(observations)')}
+                if columns and 'card_price_kopecks' not in columns:
+                    db.execute('ALTER TABLE observations ADD COLUMN card_price_kopecks INTEGER CHECK(card_price_kopecks>=0)')
+                if columns and 'card_price_kind' not in columns:
+                    db.execute("ALTER TABLE observations ADD COLUMN card_price_kind TEXT CHECK(card_price_kind IN ('wallet','displayed'))")
             self._assert_schema(db)
             if version < 3:
                 # Version 2 omitted valid short catalogs from product selection.
@@ -172,7 +180,7 @@ class Store:
         required = {
             "search_queries": {"id", "phrase", "enabled", "display_order", "enabled_since", "archived"},
             "collection_runs": {"id", "query_id", "scheduled_for", "status", "requested_top_n", "destination"},
-            "observations": {"run_id", "nm_id", "position", "price_kopecks"},
+            "observations": {"run_id", "nm_id", "position", "price_kopecks", "card_price_kopecks", "card_price_kind"},
             "product_catalog": {"query_id", "nm_id", "first_seen", "last_seen"},
             "dataset_settings": {"key", "value"},
         }
@@ -349,12 +357,16 @@ class Store:
             if (positions != list(range(1, len(products) + 1))
                     or len(nm_ids) != len(set(nm_ids))):
                 raise ValueError("Noncontiguous positions or duplicate nm_id")
+            if any((p.card_price_rub is None) != (p.card_price_kind is None)
+                   or p.card_price_kind not in (None, 'wallet', 'displayed') for p in products):
+                raise ValueError('Card price must include its observed payment condition')
             db.executemany("""INSERT INTO observations
                 (run_id, position, nm_id, price_kopecks, rating, reviews,
-                 delivery_days, seller, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [
+                 delivery_days, seller, title, card_price_kopecks, card_price_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", [
                 (run_id, p.position, p.nm_id,
                  int(p.price_rub * 100) if p.price_rub is not None else None,
-                 p.rating, p.reviews, p.delivery_days, p.seller, p.title)
+                 p.rating, p.reviews, p.delivery_days, p.seller, p.title,
+                 int(p.card_price_rub * 100) if p.card_price_rub is not None else None, p.card_price_kind)
                 for p in products
             ])
             db.execute("""UPDATE collection_runs
@@ -485,7 +497,7 @@ class Store:
     def latest_observations(self, query_id: int, *, include_partial: bool = False) -> list[dict]:
         statuses = "('success', 'partial')" if include_partial else "('success')"
         with self.connect() as db:
-            rows = db.execute(f"""SELECT o.position, o.nm_id, o.price_kopecks, o.rating,
+            rows = db.execute(f"""SELECT o.position, o.nm_id, o.price_kopecks, o.card_price_kopecks, o.card_price_kind, o.rating,
                   o.reviews, o.delivery_days, o.seller, o.title, r.started_at, r.requested_top_n,
                   r.status AS run_status
                 FROM observations o JOIN collection_runs r ON r.id=o.run_id
@@ -573,11 +585,11 @@ class Store:
             runs = list(reversed(runs))
             placeholders = ",".join("?" for _ in nm_ids)
             ids_placeholders = ",".join("?" for _ in runs)
-            found = db.execute(f"""SELECT run_id, nm_id, position, price_kopecks, rating,
+            found = db.execute(f"""SELECT run_id, nm_id, position, price_kopecks, card_price_kopecks, card_price_kind, rating,
                     reviews, delivery_days, seller, title FROM observations
                 WHERE run_id IN ({ids_placeholders}) AND nm_id IN ({placeholders})""",
                 [*(r["id"] for r in runs), *nm_ids]).fetchall()
-        fields = ("position", "price_kopecks", "rating", "reviews", "delivery_days", "seller", "title")
+        fields = ("position", "price_kopecks", "card_price_kopecks", "card_price_kind", "rating", "reviews", "delivery_days", "seller", "title")
         by_key = {(r["run_id"], r["nm_id"]): {key: r[key] for key in fields} for r in found}
         return [
             {"run_id": r["id"], "started_at": r["started_at"],

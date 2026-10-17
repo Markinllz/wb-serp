@@ -63,7 +63,7 @@ class FakeStreamlit(ModuleType):
     def date_input(self, name, *, value, **kwargs): return value
     def button(self, *args, **kwargs): return False
     def text_input(self, *args, **kwargs): return ""
-    def radio(self, name, options, **kwargs): return self.session_state.get(kwargs.get("key"), options[0])
+    def radio(self, name, options, **kwargs): return self.session_state.get(kwargs.get("key"), options[kwargs.get("index", 0)])
     def multiselect(self, *args, default=None, key=None, **kwargs):
         return self.session_state.get(key, default or [])
     def plotly_chart(self, chart, **kwargs): self.plots.append(chart)
@@ -137,9 +137,9 @@ def test_dashboard_complete_read_only_flow_with_charts_and_csv_exports(tmp_path,
         io.StringIO(history_csv.decode("utf-8-sig")))]
     assert set(positions) == {"", "1", "2"}
     assert len(st.frames) >= 2
-    latest = next(frame for frame in st.frames if "Цена, ₽" in frame)
+    latest = next(frame for frame in st.frames if "Без Кошелька, ₽" in frame)
     assert list(latest["Артикул"]) == [12, 13]
-    assert (latest["Цена, ₽"] == 100.99).all()
+    assert (latest["Без Кошелька, ₽"] == 100.99).all()
     st.session_state["view"] = "Сбор данных"
     app.main()
     monitor = next(frame for frame in st.frames if "Последний полный" in frame)

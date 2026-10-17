@@ -9,8 +9,9 @@ def next_collection(now: datetime, period: int = 3600) -> datetime:
     return datetime.fromtimestamp((int(now.timestamp()) // period + 1) * period, timezone.utc)
 
 
-def product_summaries(history: list[dict], selected: list[int], *, metric: str) -> list[dict]:
-    field = "position" if metric == "position" else "price_kopecks"
+def product_summaries(history: list[dict], selected: list[int], *, metric: str,
+                      price_field: str = "price_kopecks") -> list[dict]:
+    field = "position" if metric == "position" else price_field
     result = []
     for nm_id in selected:
         rows = [r for r in history if r["nm_id"] == nm_id]

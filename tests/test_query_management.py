@@ -142,7 +142,7 @@ def test_schema3_migration_only_adds_settings_and_preserves_records(tmp_path):
     store.initialize()
     store.initialize()
     with sqlite3.connect(cfg.database_path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert db.execute("SELECT min(enabled_since) FROM search_queries").fetchone()[0] > at.timestamp()
         for table, rows in original.items():

@@ -20,9 +20,12 @@ def chart_rank_history(history: Sequence[dict], nm_ids: Sequence[int]) -> go.Fig
 
 def chart_product_history(history: Sequence[dict], nm_ids: Sequence[int], *,
                           metric: str = "position", titles: dict[int, str] | None = None,
-                          color_indices: dict[int, int] | None = None) -> go.Figure:
+                          color_indices: dict[int, int] | None = None,
+                          price_field: str = "price_kopecks") -> go.Figure:
     if metric not in ("position", "price"):
         raise ValueError("Unknown history metric")
+    if price_field not in ("price_kopecks", "card_price_kopecks"):
+        raise ValueError("Unknown price field")
     rank = metric == "position"
     figure = go.Figure()
     for index, nm_id in enumerate(nm_ids):
@@ -33,7 +36,7 @@ def chart_product_history(history: Sequence[dict], nm_ids: Sequence[int], *,
         rows = [row for row in history if row["nm_id"] == nm_id]
         x = [datetime.fromisoformat(row["started_at"]).astimezone(MOSCOW) for row in rows]
         values = [row["position"] if rank else
-                  row["price_kopecks"] / 100 if row.get("price_kopecks") is not None else None
+                  row[price_field] / 100 if row.get(price_field) is not None else None
                   for row in rows]
         depths = [row["requested_top_n"] for row in rows]
         partial = [row.get("run_status") == "partial" for row in rows]

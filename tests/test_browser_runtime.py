@@ -61,5 +61,22 @@ class BrowserRuntimeTest(unittest.TestCase):
                 transport.close()
 
 
+    def test_reads_current_card_price_not_crossed_out_price(self):
+        with tempfile.TemporaryDirectory() as folder:
+            transport = BrowserTransport(profile_path=Path(folder)/'cards', timeout=5)
+            try:
+                transport._start()
+                transport._page.set_content('<article data-nm-id="7"><div class="price--fixture">\n                    <ins data-testid="product-card-current-price">1&nbsp;982&nbsp;₽</ins>\n                    <del>9&nbsp;372&nbsp;₽</del><span>с WB Кошельком</span></div></article>\n                    <article data-nm-id="3"><div class="price--fixture">\n                    <ins data-testid="product-card-current-price">100,50 ₽</ins></div></article>')
+                transport._renders_cards = True
+                transport._current_query = transport._rendered_query = 'fixture'
+                transport._rendered_destination = '99'
+                body = json.dumps({'products':[{'id':3},{'id':7}]}).encode()
+                observed = json.loads(transport._with_card_prices(body, '99'))['products']
+                self.assertEqual(observed[0]['_wb_card_price'], {'kopecks':10050,'kind':'displayed'})
+                self.assertEqual(observed[1]['_wb_card_price'], {'kopecks':198200,'kind':'wallet'})
+            finally:
+                transport.close()
+
+
 if __name__ == '__main__':
     unittest.main()
