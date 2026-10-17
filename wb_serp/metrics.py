@@ -48,7 +48,7 @@ class DatabaseMetrics:
                     recent.add_metric([status], recent_counts.get(status, 0))
                 metrics.extend([runs, recent])
                 latest = db.execute("""SELECT q.id,q.phrase,r.status,r.observed_count,r.requested_top_n,
-                        r.started_at,r.completed_at,
+                        r.started_at,r.completed_at,q.enabled_since,
                         (SELECT max(v.completed_at) FROM collection_runs v WHERE v.query_id=q.id
                          AND v.status IN ('success','partial') AND v.observed_count>0)
                     FROM search_queries q LEFT JOIN collection_runs r ON r.id=(
@@ -57,20 +57,23 @@ class DatabaseMetrics:
                 labels = ['query_id', 'query']
                 last_valid = GaugeMetricFamily('wb_query_last_valid_timestamp_seconds',
                                                'Last complete or partial snapshot', labels=labels)
+                enabled_since = GaugeMetricFamily('wb_query_enabled_since_timestamp_seconds',
+                                                   'Current collection registration time', labels=labels)
                 observed = GaugeMetricFamily('wb_query_observed', 'Items in latest attempt', labels=labels)
                 requested = GaugeMetricFamily('wb_query_requested', 'Requested depth in latest attempt', labels=labels)
                 duration = GaugeMetricFamily('wb_query_duration_seconds', 'Duration of latest completed attempt', labels=labels)
                 state = GaugeMetricFamily('wb_query_latest_status', 'Latest attempt status, one-hot', labels=labels+['status'])
-                for qid, phrase, status, count, top_n, started, completed, valid in latest:
+                for qid, phrase, status, count, top_n, started, completed, registered, valid in latest:
                     values = [str(qid), phrase]
                     last_valid.add_metric(values, timestamp(valid))
+                    enabled_since.add_metric(values, registered)
                     observed.add_metric(values, count or 0)
                     requested.add_metric(values, top_n or 0)
                     if completed and started:
                         duration.add_metric(values, max(0, timestamp(completed)-timestamp(started)))
                     for known in (*STATUSES, 'never'):
                         state.add_metric(values+[known], int((status or 'never') == known))
-                metrics.extend([last_valid, observed, requested, duration, state])
+                metrics.extend([last_valid, enabled_since, observed, requested, duration, state])
             size = sum(p.stat().st_size for p in (self.path, Path(str(self.path)+'-wal')) if p.exists())
             metrics.append(GaugeMetricFamily('wb_database_bytes', 'SQLite and WAL bytes', value=size))
             up.add_metric([], 1)

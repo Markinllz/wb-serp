@@ -40,7 +40,7 @@ class FakeStreamlit(ModuleType):
         self.exports = []
         self.messages = []
         self.session_state = {}
-        self.column_config = SimpleNamespace(NumberColumn=lambda **kw: kw, TextColumn=lambda **kw: kw)
+        self.column_config = SimpleNamespace(NumberColumn=lambda **kw: kw, TextColumn=lambda **kw: kw, LinkColumn=lambda **kw: kw)
     def set_page_config(self, **kwargs): self.page_config = kwargs
     def markdown(self, *args, **kwargs): pass
     def error(self, msg): self.messages.append(("error",msg))
@@ -51,6 +51,9 @@ class FakeStreamlit(ModuleType):
     def divider(self): pass
     def columns(self, num): return [Context() for _ in range(num)]
     def container(self, **kwargs): return Context()
+    def form(self, *args, **kwargs): return Context()
+    def form_submit_button(self, *args, **kwargs): return False
+    def success(self, msg): self.messages.append(("success",msg))
     def expander(self, *args, **kwargs): return Context()
     def tabs(self, names): return [Context() for _ in names]
     def metric(self, *args, **kwargs): pass

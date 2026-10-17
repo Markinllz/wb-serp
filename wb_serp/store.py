@@ -1,6 +1,6 @@
 """SQLite persistence and read models.
 
-One collector is the sole writer; the web UI makes short-lived read queries.
+One collector writes observations; the web UI can change query settings.
 A run is never overwritten. Partial snapshots retain observed ranks; failed runs
 are diagnostic only. Missing ranks in partial snapshots do not prove absence.
 """
@@ -14,7 +14,7 @@ from typing import Iterator, Sequence
 
 from wb_serp.models import Product, RunStatus
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def iso(value: datetime) -> str:
@@ -64,7 +64,7 @@ class Store:
             if version == SCHEMA_VERSION:
                 self._assert_schema(db)
                 return
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise RuntimeError(f"Unsupported schema migration from {version}")
             if version == 0:
                 db.executescript("""
@@ -124,6 +124,15 @@ class Store:
                 db.execute("""CREATE TABLE IF NOT EXISTS dataset_settings (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL
                 )""")
+            if version < 4:
+                db.execute('BEGIN IMMEDIATE')
+                columns = {r['name'] for r in db.execute('PRAGMA table_info(search_queries)')}
+                if columns and 'enabled_since' not in columns:
+                    db.execute('''ALTER TABLE search_queries ADD COLUMN enabled_since REAL
+                        NOT NULL DEFAULT 0 CHECK(enabled_since>=0)''')
+                if columns:
+                    db.execute('UPDATE search_queries SET enabled_since=? WHERE enabled_since=0',
+                               (datetime.now(timezone.utc).timestamp(),))
             self._assert_schema(db)
             if version < 3:
                 # Version 2 omitted valid short catalogs from product selection.
@@ -155,7 +164,7 @@ class Store:
     def _assert_schema(db: sqlite3.Connection) -> None:
         """Fail loudly on partially migrated or manually damaged databases."""
         required = {
-            "search_queries": {"id", "phrase", "enabled", "display_order"},
+            "search_queries": {"id", "phrase", "enabled", "display_order", "enabled_since"},
             "collection_runs": {"id", "query_id", "scheduled_for", "status", "requested_top_n", "destination"},
             "observations": {"run_id", "nm_id", "position", "price_kopecks"},
             "product_catalog": {"query_id", "nm_id", "first_seen", "last_seen"},
@@ -181,15 +190,55 @@ class Store:
                 f"{sorted(required_indexes - existing_indexes)}. Restore schema from a trusted backup."
             )
 
-    def sync_queries(self, phrases: Sequence[str]) -> None:
+    def sync_queries(self, phrases: Sequence[str], *, preserve_choices: bool = False) -> None:
         if len(set(phrases)) != len(phrases) or not phrases:
             raise ValueError("Queries must be non-empty and unique")
         with self.connect() as db:
-            db.execute("UPDATE search_queries SET enabled = 0")
+            if not preserve_choices:
+                db.execute("UPDATE search_queries SET enabled = 0")
             for order, phrase in enumerate(phrases, start=1):
-                db.execute("""INSERT INTO search_queries(phrase, display_order, enabled)
-                    VALUES(?, ?, 1) ON CONFLICT(phrase) DO UPDATE SET
-                    display_order=excluded.display_order, enabled=1""", (phrase, order))
+                update = "display_order=excluded.display_order"
+                if not preserve_choices:
+                    update += ", enabled=1, enabled_since=excluded.enabled_since"
+                db.execute(f"""INSERT INTO search_queries(phrase, display_order, enabled, enabled_since)
+                    VALUES(?, ?, 1, ?) ON CONFLICT(phrase) DO UPDATE SET {update}""",
+                    (phrase, order, datetime.now(timezone.utc).timestamp()))
+
+    def add_query(self, phrase: str) -> tuple[int, bool]:
+        """Add a literal phrase or resume it, without replacing historical IDs."""
+        if self.readonly:
+            raise ValueError("Read-only store cannot change queries")
+        if (not isinstance(phrase, str) or not phrase.strip() or len(phrase) > 300
+                or any(ord(c) < 32 or ord(c) == 127 for c in phrase)):
+            raise ValueError("Введите запрос длиной от 1 до 300 символов, без переносов строк.")
+        if phrase != phrase.strip():
+            raise ValueError("Уберите пробелы в начале и конце запроса.")
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            existing = db.execute('SELECT id, enabled FROM search_queries WHERE phrase=?', (phrase,)).fetchone()
+            if existing:
+                if existing['enabled']:
+                    raise ValueError("Этот запрос уже собирается.")
+                db.execute('UPDATE search_queries SET enabled=1,enabled_since=? WHERE id=?',
+                           (datetime.now(timezone.utc).timestamp(), existing['id']))
+                return existing['id'], False
+            result = db.execute('''INSERT INTO search_queries (phrase,display_order,enabled,enabled_since)
+                VALUES (?,(SELECT COALESCE(max(display_order),0)+1 FROM search_queries),1,?)''',
+                (phrase, datetime.now(timezone.utc).timestamp()))
+            return result.lastrowid, True
+
+    def set_query_enabled(self, query_id: int, enabled: bool) -> None:
+        """Pause/resume collection; never delete queries, runs or observations."""
+        if self.readonly:
+            raise ValueError("Read-only store cannot change queries")
+        if not isinstance(enabled, bool):
+            raise ValueError("Enabled must be a boolean")
+        with self.connect() as db:
+            result = db.execute('''UPDATE search_queries SET enabled=?,
+                enabled_since=CASE WHEN enabled=0 AND ?=1 THEN ? ELSE enabled_since END
+                WHERE id=?''', (int(enabled), int(enabled), datetime.now(timezone.utc).timestamp(), query_id))
+            if not result.rowcount:
+                raise ValueError("Запрос не найден. Обновите список.")
 
     def enabled_queries(self) -> list[sqlite3.Row]:
         with self.connect() as db:
@@ -284,9 +333,9 @@ class Store:
                     for p in products
                 ])
 
-    def queries_dashboard(self) -> list[dict]:
+    def queries_dashboard(self, *, include_paused: bool = False) -> list[dict]:
         with self.connect() as db:
-            rows = db.execute("""SELECT q.id, q.phrase, q.display_order,
+            rows = db.execute("""SELECT q.id, q.phrase, q.display_order, q.enabled, q.enabled_since,
                 (SELECT status FROM collection_runs r WHERE r.query_id=q.id
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_status,
                 (SELECT started_at FROM collection_runs r WHERE r.query_id=q.id
@@ -295,7 +344,8 @@ class Store:
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_success,
                 (SELECT observed_count FROM collection_runs r WHERE r.query_id=q.id
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_count
-                FROM search_queries q WHERE q.enabled=1 ORDER BY q.display_order""").fetchall()
+                FROM search_queries q WHERE (? OR q.enabled=1) ORDER BY q.display_order,q.id""",
+                (include_paused,)).fetchall()
         return [dict(row) for row in rows]
 
     def available_depths(self, query_id: int, *, include_partial: bool = False) -> list[int]:

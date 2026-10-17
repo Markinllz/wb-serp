@@ -50,9 +50,15 @@ def test_readonly_export_distinguishes_partial_failed_and_never(tmp_path):
     assert value('wb_query_duration_seconds', query_id='1') == 15
     assert value('wb_query_last_valid_timestamp_seconds', query_id='1') > 0
     assert value('wb_query_last_valid_timestamp_seconds', query_id='2') == 0
+    assert value('wb_query_enabled_since_timestamp_seconds', query_id='1') > 0
     assert value('wb_runs', status='blocked') == 0
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT * FROM collection_runs ORDER BY id').fetchall() == before
+
+    store.set_query_enabled(2, False)
+    paused = samples(path)
+    assert not any(s.labels.get('query_id') == '2' for s in paused)
+    assert next(s.value for s in paused if s.name == 'wb_queries_enabled') == 2
 
 
 def test_invalid_schema_is_down_without_partial_metrics(tmp_path):

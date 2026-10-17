@@ -57,3 +57,19 @@ tests:
       - eval_time: 12m
         alertname: CollectorMissing
         exp_alerts: []
+  - name: new query waits for first hourly collection
+    interval: 1m
+    input_series:
+      - series: 'wb_query_last_valid_timestamp_seconds{query_id="71",query="new"}'
+        values: '0+0x210'
+      - series: 'wb_query_enabled_since_timestamp_seconds{query_id="71",query="new"}'
+        values: '3600+0x210'
+    alert_rule_test:
+      - eval_time: 110m
+        alertname: CollectionStale
+        exp_alerts: []
+      - eval_time: 192m
+        alertname: CollectionStale
+        exp_alerts:
+          - exp_labels: {query_id: '71', query: new, severity: warning}
+            exp_annotations: {summary: 'Нет свежего снимка: new'}

@@ -192,9 +192,9 @@
     },
     {
       "id": 3,
-      "title": "Свежих / 70",
+      "title": "Свежие данные",
       "type": "stat",
-      "description": "Фразы с полным или неполным снимком за последние два часа.",
+      "description": "Доля активных запросов с полным или неполным снимком за последние два часа. Новый запрос ждёт первого сбора.",
       "gridPos": {
         "x": 8,
         "y": 0,
@@ -208,7 +208,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count(time() - wb_query_last_valid_timestamp_seconds < 7200) or vector(0)",
+          "expr": "100 * (count(wb_query_last_valid_timestamp_seconds > time() - 7200) or vector(0)) / clamp_min(wb_queries_enabled, 1)",
           "legendFormat": "{{instance}}",
           "range": false,
           "instant": true,
@@ -217,7 +217,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percent",
           "color": {
             "mode": "thresholds"
           },
@@ -234,7 +234,7 @@
               },
               {
                 "color": "green",
-                "value": 70
+                "value": 100
               }
             ]
           },

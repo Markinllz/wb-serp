@@ -45,7 +45,8 @@ def prepare(cfg: Settings) -> Store:
     store = Store(cfg.database_path)
     with exclusive_collector(cfg.database_path):
         store.initialize()
-        store.sync_queries(read_queries(cfg.queries_path))
+        # Bootstrap the canonical phrases without undoing user pauses or custom queries.
+        store.sync_queries(read_queries(cfg.queries_path), preserve_choices=True)
         interrupted = store.interrupt_abandoned_runs()
         if interrupted:
             log.warning("Marked %s abandoned runs as interrupted", interrupted)

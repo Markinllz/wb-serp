@@ -35,8 +35,11 @@ with closing(sqlite3.connect(f'file:{p}?mode=ro', uri=True)) as db:
     latest = db.execute("SELECT max(completed_at) FROM collection_runs WHERE status='success'").fetchone()[0]
     print('integrity:', integrity, 'enabled queries:', count)
     print('statuses:', statuses, 'observations:', observations, 'last success UTC:', latest)
-    if integrity != 'ok' or count != 70:
-        raise SystemExit('FAIL: database consistency or query count')
+    canonical = [q for q in Path('/app/config/queries.txt').read_text().splitlines()
+                 if q.strip() and not q.lstrip().startswith('#')]
+    saved = {q[0] for q in db.execute('SELECT phrase FROM search_queries')}
+    if integrity != 'ok' or not set(canonical) <= saved:
+        raise SystemExit('FAIL: database consistency or canonical queries missing')
     if not latest:
         raise SystemExit('FAIL: no successful live snapshots yet')
 PY

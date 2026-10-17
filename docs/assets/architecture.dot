@@ -7,13 +7,13 @@ digraph Architecture {
   subgraph cluster_product {
     label="Продукт"; color="#d9e3f1"; style=rounded; fontname="Arial"; fontsize=15;
     ui [label="Streamlit + Plotly\nпозиции · цены · товары"];
-    db [label="SQLite WAL\nистория снимков", shape=cylinder, fillcolor="#fff4dd", color="#d7ac51"];
+    db [label="SQLite WAL\nснимки · запросы · настройки", shape=cylinder, fillcolor="#fff4dd", color="#d7ac51"];
     worker [label="Collector + Chromium\nпочасовой сбор · повторы"];
-    phrases [label="70 фраз\nфиксированный регион", shape=note];
+    phrases [label="70 исходных фраз\nфиксированный регион", shape=note];
     backup [label="SQLite Online Backup\nежедневно · проверка копии", fillcolor="#faf9f5"];
     phrases -> worker;
     worker -> db [label="запись"];
-    ui -> db [label="чтение"];
+    ui -> db [label="чтение · настройка запросов"];
     backup -> db [label="копия", style=dashed];
   }
   wb [label="Wildberries\nпоисковая выдача", fillcolor="#f4eafa", color="#b98acb"];

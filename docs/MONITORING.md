@@ -21,6 +21,7 @@
 
 - Нет ответа сервиса или недоступна база: две минуты.
 - Нет валидного снимка фразы больше двух часов: ещё десять минут ожидания.
+- Новому или возобновлённому запросу даётся два часа на первый сбор. Время включения учитывается отдельно и не выдаётся за время настоящего снимка. Запросы на паузе не входят в проверку свежести.
 - Блокировка WB: пять минут; ошибка или прерванный сбор: десять минут.
 - На диске меньше 15%: пять минут; доступной памяти меньше 10%: десять минут.
 - Нет подтверждённой резервной копии больше 26 часов.
@@ -38,7 +39,7 @@ Prometheus и экспортёры доступны только в Docker-се�
 Изменения экрана вносятся в `monitoring/grafana/dashboards/overview.json`, правил — в `monitoring/alerts.yml`. Grafana перечитывает панель автоматически, Prometheus после изменения конфигурации перезапускается:
 
 ```bash
-docker compose -f compose.yaml -f compose.browser.yaml -f compose.monitoring.yaml restart prometheus
+docker compose -f compose.yaml -f compose.browser.yaml -f compose.monitoring.yaml up -d --no-deps --force-recreate prometheus
 ```
 
 Правила проверяются `promtool test rules /etc/prometheus/rules.test.yml` из каталога `/etc/prometheus` с примонтированной папкой `monitoring/`.

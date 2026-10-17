@@ -1,0 +1,55 @@
+[data-testid="stAppViewContainer"]{background:#f5f7fb}
+[data-testid="stHeader"]{background:rgba(245,247,251,.94)}
+[data-testid="stSidebar"]{background:#fff;border-right:1px solid #e4e9f1}
+.block-container{max-width:1510px;padding-top:4.5rem;padding-bottom:2rem}
+h1{font-size:1.85rem!important;font-weight:700!important;line-height:1.3!important;letter-spacing:-.035em;padding-bottom:.25rem!important;color:#17243c}
+h2,h3{letter-spacing:-.025em;color:#17243c}
+[data-testid="stCaptionContainer"] p{color:#63728a!important}
+.brand{display:flex;align-items:center;gap:12px;margin:0 0 26px}
+.brand-mark{display:grid;place-items:center;width:43px;height:43px;border-radius:12px;background:#172e58;color:#fff;font-size:14px;font-weight:800;letter-spacing:-.5px}
+.brand strong{font-size:19px;letter-spacing:-.6px;color:#182640}
+.brand small{display:block;color:#7b879b;font-size:12px;margin-top:2px}
+.context{font-size:12px;color:#7b879b;letter-spacing:.02em;margin-bottom:8px}
+.schedule{background:#f5f7fb;border:1px solid #e6ebf3;border-radius:12px;padding:14px 16px;margin:20px 0 8px;font-size:13px;color:#66758d}
+.schedule strong{display:block;color:#1d3153;font-size:19px;margin-top:4px;font-variant-numeric:tabular-nums}
+[data-testid="stTextInput"] input,[data-testid="stDateInput"] input{border-radius:9px}
+[data-baseweb="select"]>div{background:#fff;border-color:#e2e8f0;border-radius:9px}
+[data-testid="stButton"] button,[data-testid="stDownloadButton"] button{border-radius:9px;min-height:39px}
+.st-key-summary{margin:8px 0 12px;padding:14px 20px;background:#fff;border:1px solid #e3e9f2;border-radius:14px}
+.st-key-summary [data-testid="stHorizontalBlock"]{flex-wrap:nowrap;gap:1rem}
+.st-key-summary [data-testid="stColumn"]{min-width:0!important}
+[data-testid="stMetricLabel"]{color:#718098;font-size:.8rem}
+[data-testid="stMetricValue"]{font-size:1.7rem;font-weight:650;color:#172e58}
+[data-testid="stTabs"] [role="tablist"]{gap:6px;margin-bottom:0}
+[data-testid="stTabs"] [role="tab"]{padding:9px 15px;font-size:14px;font-weight:550}
+[data-testid="stTabs"] [aria-selected="true"]{color:#2563eb;background:#e9f0ff;border-radius:8px 8px 0 0}
+.st-key-history-panel{background:#fff;border:1px solid #e3e9f2;border-radius:14px;padding:18px 20px;margin-top:4px}
+.product-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0 4px;max-height:310px;overflow:auto}
+.product-card{border:1px solid #e1e8f1;border-radius:11px;padding:14px 16px;background:#fff;min-width:0}
+.product-card .product-meta{display:flex;align-items:center;gap:8px;color:#7b879b;font-size:11px;margin-bottom:7px}
+.product-swatch{width:20px;height:0;border-top:3px solid;display:inline-block;flex-shrink:0}
+.product-card a{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:40px;line-height:20px;color:#243b60!important;text-decoration:none;font-size:13px;font-weight:550}
+.product-card a:hover{text-decoration:underline}
+.product-number{font-size:22px;font-weight:650;letter-spacing:-.6px;color:#172e58;line-height:1.4}
+.product-footer{display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:10px}
+.product-delta{font-size:12px;font-weight:600;padding:3px 7px;border-radius:5px;background:#f2f5f9;color:#64748b;white-space:nowrap}
+.product-delta.positive{color:#117765;background:#e9f7f1}
+.product-delta.negative{color:#b44747;background:#fff0f0}
+.product-hint{color:#8290a4;font-size:11px;margin-top:2px}
+[data-testid="stDataFrame"]{border:1px solid #e3e9f2;border-radius:10px;overflow:hidden}
+[data-testid="stForm"]{background:#fff;border-color:#e3e9f2;border-radius:13px}
+[data-testid="stExpander"]{background:#fff;border-color:#e3e9f2;border-radius:10px}
+@media(max-width:900px){.product-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){
+ .block-container{padding-top:4rem;padding-left:1rem;padding-right:1rem}
+ h1{font-size:1.35rem!important}
+ .st-key-summary{padding:14px}
+ [data-testid="stMetricValue"]{font-size:1.3rem}
+ [data-testid="stMetricLabel"]{font-size:.7rem}
+ [data-testid="stTabs"] [role="tab"]{padding:8px 9px;font-size:12px}
+ .st-key-history-panel{padding:12px}
+ .product-grid{grid-template-columns:1fr;max-height:320px}
+ .product-card a{min-height:auto}
+}
+
+[data-testid="stDateInput"] [data-baseweb="input"],[data-testid="stTextInput"] [data-baseweb="input"]{background:#fff;border:1px solid #dfe6f0;border-radius:9px}

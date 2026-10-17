@@ -64,6 +64,10 @@ def check(output: Path) -> dict:
         context.route('**/*', local_only)
         page = context.new_page()
         page.on('pageerror', lambda error: errors.append(str(error)))
+
+        def settled():
+            expect(page.get_by_test_id('stApp')).to_have_attribute('data-test-script-state', 'notRunning')
+            expect(page.locator('[data-stale="true"]')).to_have_count(0)
         page.goto('http://127.0.0.1:8501', wait_until='domcontentloaded')
         chooser = page.get_by_role('combobox', name='Поисковый запрос')
         expect(chooser).to_be_visible(timeout=30000)
@@ -89,6 +93,8 @@ def check(output: Path) -> dict:
         missing = next((row for row in store.known_products(complete['id'])
                         if row['nm_id'] not in current_ids), None)
         if missing:
+            selector = page.get_by_test_id('stExpander').filter(has_text='Изменить товары для сравнения')
+            selector.locator('summary').click()
             comparison = page.get_by_role('combobox', name='Товары для сравнения')
             comparison.fill(str(missing['nm_id']))
             page.get_by_role('option').filter(has_text=str(missing['nm_id'])).click()
@@ -98,11 +104,13 @@ def check(output: Path) -> dict:
             selected_ids.append(missing['nm_id'])
             report['historical_product_absent_from_latest'] = missing['nm_id']
             missing_trace = plot.evaluate('''(p, id) => {
-                const trace = p.data.find(t => t.name === String(id));
+                const trace = p.data.find(t => t.meta.nm_id === id);
                 return {positions: Array.from(trace.y), connectgaps: trace.connectgaps};
             }''', missing['nm_id'])
             assert None in missing_trace['positions'] and not missing_trace['connectgaps']
             report['historical_product_trace'] = missing_trace
+            selector.locator('summary').click()
+        settled()
         page.screenshot(path=str(output / 'history-desktop.png'), full_page=True, animations='disabled')
 
         with page.expect_download() as download:
@@ -131,12 +139,13 @@ def check(output: Path) -> dict:
             r['price_kopecks'] for r in expected_history]
         page.get_by_test_id('stRadio').get_by_text('Цены', exact=True).click()
         page.wait_for_function('document.querySelector(".js-plotly-plot").layout.yaxis.title.text === "Цена, ₽"')
-        price_traces = plot.evaluate('(p) => p.data.map(t => ({id:t.name, values:Array.from(t.y), gaps:t.connectgaps}))')
+        price_traces = plot.evaluate('(p) => p.data.map(t => ({id:String(t.meta.nm_id), values:Array.from(t.y), gaps:t.connectgaps}))')
         for trace in price_traces:
             source = [r for r in expected_history if str(r['nm_id']) == trace['id']]
             assert trace['values'] == [r['price_kopecks'] / 100 if r['price_kopecks'] is not None
                                         else None for r in source]
             assert trace['gaps'] is False
+        settled()
         page.screenshot(path=str(output / 'prices-desktop.png'), full_page=True, animations='disabled')
         report['price_history'] = {'status': 'PASS', 'products': len(price_traces)}
         page.get_by_test_id('stRadio').get_by_text('Позиции', exact=True).click()
@@ -219,10 +228,12 @@ def check(output: Path) -> dict:
                                  ('Доставка, дни', 'delivery_days')]:
                 value = Decimal(row[label]) if row[label] else None
                 assert value == (Decimal(str(source[field])) if source[field] is not None else None)
+        settled()
         page.screenshot(path=str(output / 'snapshot-desktop.png'), full_page=True, animations='disabled')
 
         page.get_by_role('tab', name='Сборы').click()
         expect(page.get_by_role('heading', name=f'Все запросы · {len(queries)}', exact=True)).to_be_visible()
+        settled()
         page.screenshot(path=str(output / 'operations-desktop.png'), full_page=True, animations='disabled')
         partial = next((q for q in queries if not q['last_success'] and q['last_status'] == 'partial'), None)
         if partial:
@@ -245,6 +256,7 @@ def check(output: Path) -> dict:
                 '(p) => p.data.flatMap(t => Array.from(t.marker.symbol))')
             assert markers and all(m == 'diamond-open' for m in markers), markers
             expect(page.get_by_role('button', name='Скачать историю CSV')).to_be_visible()
+            settled()
             page.screenshot(path=str(output / 'partial-desktop.png'), full_page=True, animations='disabled')
             report['partial_visible'] = {'query': partial['phrase'], 'count': len(exported),
                                          'selectable': store.product_count(partial['id']),
@@ -252,10 +264,13 @@ def check(output: Path) -> dict:
 
         select_query(complete['phrase'])
         page.get_by_role('tab', name='Позиции').click()
+        selector = page.get_by_test_id('stExpander').filter(has_text='Изменить товары для сравнения')
+        selector.locator('summary').click()
         search = page.get_by_role('textbox', name='Поиск артикула или названия')
         search.fill(str(expected[0]['nm_id']))
         search.press('Enter')
         expect(page.get_by_text('Найдено: 1 · В истории:', exact=False)).to_be_visible()
+        selector.locator('summary').click()
         # All configured phrases must open their actual latest snapshot, including short catalogs.
         checked_queries = []
         for query in queries:
@@ -280,6 +295,7 @@ def check(output: Path) -> dict:
                                '.getBoundingClientRect().right <= 1')
         expect(page.locator('.js-plotly-plot').first).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1')
+        settled()
         page.screenshot(path=str(output / 'history-mobile.png'), full_page=True, animations='disabled')
         expect(page.locator('[data-testid="stException"]')).to_have_count(0)
         assert not errors, errors
