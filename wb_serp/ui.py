@@ -136,7 +136,11 @@ def show_collection_overview(cfg: Settings, query_id: int | None) -> None:
         "last_attempt": "Последний запуск", "last_success": "Последний полный", "last_count": "Товаров"})
     st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний запуск", "Последний полный"]],
                  hide_index=True, width="stretch", height=350, placeholder="—")
-    st.markdown("#### Запуски выбранного запроса")
+    st.markdown("#### История сборов")
+    query_map = {q['id']: q['phrase'] for q in queries}
+    query_id = st.selectbox('Запрос для истории сборов', options=list(query_map),
+                           index=list(query_map).index(query_id) if query_id in query_map else 0,
+                           key='runs_query', format_func=query_map.get)
     runs = store.recent_runs(query_id, limit=200) if query_id else []
     if runs:
         table = pd.DataFrame(runs)
