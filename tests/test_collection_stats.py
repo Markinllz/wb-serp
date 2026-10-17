@@ -24,7 +24,7 @@ def test_collection_stats_deduplicate_products_retries_and_freeze_cycle_plan(tmp
                 Product(nm, i, None, None, None, None, None, f'Товар {nm}')
                 for i, nm in enumerate(products, 1)], finished_at=start)
 
-    run('failed', ids[0], 'failed', [], 0)
+    run('failed', ids[0], 'failed', [99], 0)
     run('retry', ids[0], 'success', [11, 12], 1)
     run('partial', ids[1], 'partial', [12], 2)
     run('active', ids[2], 'running', [], 3)
