@@ -10,9 +10,9 @@ from wb_serp.config import Settings
     (True, ["1970-01-01T00:00:00+00:00", "1970-01-01T00:01:00+00:00"]),
     (False, ["1970-01-01T00:01:00+00:00"]),
 ])
-def test_worker_runs_at_hour_boundary_and_handles_sigterm(monkeypatch, run_at_startup, expected_slots):
+def test_worker_runs_at_hour_boundary_and_handles_sigterm(monkeypatch, tmp_path, run_at_startup, expected_slots):
     config = replace(Settings.from_env(), collection_period_seconds=60,
-                     run_on_startup=run_at_startup)
+                     run_on_startup=run_at_startup, database_path=tmp_path / "worker.sqlite")
     t = [0.0]
     slots = []
     handlers = {}
@@ -25,7 +25,7 @@ def test_worker_runs_at_hour_boundary_and_handles_sigterm(monkeypatch, run_at_st
             # Triggering after the 2nd cycle allows the boundary collection.
             if slots and slots[-1] == "1970-01-01T00:01:00+00:00":
                 handlers[cli.signal.SIGTERM]()
-    def fake_cycle(cfg, store, *, scheduled_for, should_stop=None):
+    def fake_cycle(cfg, store, *, scheduled_for, should_stop=None, runtime=None):
         slots.append(scheduled_for)
         return (1, 0, 0)
     monkeypatch.setattr(cli.signal, "signal", fake_signal)

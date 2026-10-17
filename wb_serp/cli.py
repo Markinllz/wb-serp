@@ -17,6 +17,7 @@ from wb_serp.parsing import SchemaError, parse_product
 from wb_serp.queries import read_queries
 from wb_serp.service import Collector
 from wb_serp.store import Store
+from wb_serp.runtime import WorkerHeartbeat
 
 log = logging.getLogger(__name__)
 
@@ -55,17 +56,19 @@ def prepare(cfg: Settings) -> Store:
 
 def run_cycle(cfg: Settings, store: Store, *, phrase: str | None = None,
               force: bool = False, scheduled_for: str | None = None,
-              should_stop: Callable[[], bool] | None = None) -> tuple[int, int, int]:
+              should_stop: Callable[[], bool] | None = None,
+              runtime: WorkerHeartbeat | None = None) -> tuple[int, int, int]:
     # Only one active HTTP collection cycle per shared VPS volume.
     with exclusive_collector(cfg.database_path):
         return _run_cycle_locked(cfg, store, phrase=phrase,
                                  force=force, scheduled_for=scheduled_for,
-                                 should_stop=should_stop)
+                                 should_stop=should_stop, runtime=runtime)
 
 
 def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
                       force: bool, scheduled_for: str | None,
-                      should_stop: Callable[[], bool] | None = None) -> tuple[int, int, int]:
+                      should_stop: Callable[[], bool] | None = None,
+                      runtime: WorkerHeartbeat | None = None) -> tuple[int, int, int]:
     slot = scheduled_for or datetime.now(timezone.utc).replace(
         minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
     queries = store.enabled_queries()
@@ -74,6 +77,9 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
         if not queries:
             raise ValueError(f"Query not configured: {phrase}")
     completed, skipped, failed = 0, 0, 0
+    if runtime:
+        runtime.update("collecting", scheduled_for=slot, query_ids=[q["id"] for q in queries],
+                       cycle_started_at=datetime.now(timezone.utc).isoformat())
     with build_client(cfg) as client:
         collector = Collector(store, client, destination=cfg.destination,
                               top_n=cfg.top_n, page_limit=cfg.page_limit)
@@ -108,9 +114,16 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
                 break
     log.info("Cycle %s done: attempted=%s, skipped successful=%s, failed=%s",
              slot, completed, skipped, failed)
+    if runtime:
+        runtime.update("waiting", cycle_finished_at=datetime.now(timezone.utc).isoformat())
     return completed, skipped, failed
 
 def run_worker(cfg: Settings, store: Store) -> None:
+    with WorkerHeartbeat(cfg.database_path) as runtime:
+        _run_worker(cfg, store, runtime)
+
+
+def _run_worker(cfg: Settings, store: Store, runtime: WorkerHeartbeat) -> None:
     running = True
 
     def stop(*_: object) -> None:
@@ -126,14 +139,14 @@ def run_worker(cfg: Settings, store: Store) -> None:
         last_slot = int(time.time()) // period
         run_cycle(cfg, store, scheduled_for=datetime.fromtimestamp(
             last_slot * period, tz=timezone.utc).isoformat(timespec="seconds"),
-            should_stop=lambda: not running)
+            should_stop=lambda: not running, runtime=runtime)
     while running:
         now_slot = int(time.time()) // period
         if now_slot > (last_slot if last_slot is not None else -1):
             last_slot = now_slot
             run_cycle(cfg, store, scheduled_for=datetime.fromtimestamp(
                 now_slot * period, tz=timezone.utc).isoformat(timespec="seconds"),
-                should_stop=lambda: not running)
+                should_stop=lambda: not running, runtime=runtime)
         if running:
             time.sleep(min(5, max(0.2, (now_slot + 1) * period - time.time())))
 

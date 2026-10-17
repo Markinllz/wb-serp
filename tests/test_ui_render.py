@@ -41,6 +41,7 @@ class FakeStreamlit(ModuleType):
         self.messages = []
         self.session_state = {}
         self.column_config = SimpleNamespace(NumberColumn=lambda **kw: kw, TextColumn=lambda **kw: kw, LinkColumn=lambda **kw: kw)
+    def fragment(self, **kwargs): return lambda fn: fn
     def set_page_config(self, **kwargs): self.page_config = kwargs
     def markdown(self, *args, **kwargs): pass
     def error(self, msg): self.messages.append(("error",msg))

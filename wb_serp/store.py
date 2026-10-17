@@ -348,6 +348,41 @@ class Store:
                 (include_paused,)).fetchall()
         return [dict(row) for row in rows]
 
+    def collection_stats(self, *, slot: str, depth: int,
+                         query_ids: Sequence[int] | None = None) -> dict:
+        """Global totals and latest attempt per planned query, not retry counts."""
+        with self.connect() as db:
+            db.execute('BEGIN')
+            totals = dict(db.execute("""SELECT
+                (SELECT count(*) FROM observations) AS observations,
+                (SELECT count(DISTINCT nm_id) FROM product_catalog) AS products,
+                (SELECT count(*) FROM collection_runs WHERE status IN ('success','partial')
+                    AND observed_count>0) AS snapshots,
+                (SELECT count(*) FROM search_queries WHERE enabled=1) AS active_queries,
+                (SELECT max(completed_at) FROM collection_runs WHERE status IN ('success','partial')
+                    AND observed_count>0) AS last_saved_at""").fetchone())
+            if query_ids is None:
+                query_ids = [r[0] for r in db.execute('SELECT id FROM search_queries WHERE enabled=1')]
+            if query_ids:
+                placeholders = ','.join('?' for _ in query_ids)
+                rows = db.execute(f"""WITH attempts AS (
+                    SELECT r.*, q.phrase,
+                        row_number() OVER (PARTITION BY query_id ORDER BY started_at DESC,r.rowid DESC) AS n
+                    FROM collection_runs r JOIN search_queries q ON q.id=r.query_id
+                    WHERE scheduled_for=? AND requested_top_n=? AND query_id IN ({placeholders})
+                ) SELECT status,observed_count,phrase FROM attempts WHERE n=1""",
+                    (slot, depth, *query_ids)).fetchall()
+            else:
+                rows = []
+        counts = {state: sum(r['status'] == state for r in rows)
+                  for state in ('success', 'partial', 'failed', 'blocked', 'interrupted', 'running')}
+        return {**totals, 'slot': slot, 'target': len(query_ids),
+                'processed': sum(n for state, n in counts.items() if state != 'running'),
+                'counts': counts,
+                'cycle_observations': sum(r['observed_count'] for r in rows
+                                          if r['status'] in ('success', 'partial')),
+                'current_query': next((r['phrase'] for r in rows if r['status'] == 'running'), None)}
+
     def available_depths(self, query_id: int, *, include_partial: bool = False) -> list[int]:
         """Keep requested depths separate even when displaying short snapshots."""
         statuses = "('success', 'partial')" if include_partial else "('success')"

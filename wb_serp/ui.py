@@ -14,6 +14,7 @@ from wb_serp.charts import PALETTE, chart_product_history, chart_rank_changes, c
 from wb_serp.config import Settings
 from wb_serp.store import Store
 from wb_serp.presentation import next_collection, product_summaries
+from wb_serp.runtime import read_worker_status
 
 MSK = ZoneInfo("Europe/Moscow")
 STATUS_LABELS = {
@@ -50,6 +51,97 @@ def snapshot_table(rows: list[dict]) -> pd.DataFrame:
         "seller": "Продавец", "started_at": "Время", "requested_top_n": "Глубина",
         "run_status": "Статус",
     })
+
+
+def live_collection(cfg: Settings) -> tuple[dict, dict]:
+    runtime = read_worker_status(cfg.database_path)
+    now = datetime.now(timezone.utc)
+    slot = runtime.get("scheduled_for") or datetime.fromtimestamp(
+        int(now.timestamp()) // cfg.collection_period_seconds * cfg.collection_period_seconds,
+        timezone.utc).isoformat(timespec="seconds")
+    stats = Store(cfg.database_path, readonly=True).collection_stats(
+        slot=slot, depth=cfg.top_n, query_ids=runtime.get("query_ids"))
+    return runtime, stats
+
+
+def number(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
+
+
+@st.fragment(run_every="5s")
+def show_live_status(cfg: Settings) -> None:
+    runtime, stats = live_collection(cfg)
+    if runtime.get('alive'):
+        if runtime['state'] == 'collecting':
+            label, tone = 'Идёт сбор', 'busy'
+        elif stats['counts']['blocked']:
+            label, tone = 'WB ограничил сбор', 'error'
+        elif stats['counts']['failed'] or stats['counts']['interrupted']:
+            label, tone = 'Сбор завершён с ошибками', 'error'
+        else:
+            label, tone = 'Ожидание следующего сбора', 'ready'
+    else:
+        label = {'stopped': 'Сборщик остановлен', 'error': 'Ошибка сборщика',
+                 'unknown': 'Нет связи со сборщиком'}.get(runtime.get('state'), 'Нет связи со сборщиком')
+        tone = 'error'
+    current = stats['current_query'] if runtime.get('alive') and runtime['state'] == 'collecting' else None
+    progress = ''
+    if stats['target'] and (runtime.get('scheduled_for') or stats['processed']):
+        hour = datetime.fromisoformat(stats['slot']).astimezone(MSK).strftime('%H:%M')
+        progress = (f'<div class="live-progress">Сбор за {hour}<strong>{stats["processed"]} из {stats["target"]}</strong></div>'
+                    f'<progress aria-label="Обработано запросов" value="{stats["processed"]}" max="{stats["target"]}"></progress>'
+                    f'<small>Сохранено в этом сборе: {number(stats["cycle_observations"])}</small>')
+    if current:
+        progress += f'<p class="live-query" title="{html.escape(current)}">{html.escape(current)}</p>'
+    latest = display_time(stats['last_saved_at'])
+    next_at = next_collection(datetime.now(timezone.utc), cfg.collection_period_seconds).astimezone(MSK)
+    st.markdown(f'<div class="live-panel"><div class="live-title">Сбор данных</div>'
+                f'<div class="live-status {tone}"><i></i>{label}</div>'
+                f'<div class="live-totals"><div><span>Наблюдений</span><strong>{number(stats["observations"])}</strong></div>'
+                f'<div><span>Товаров</span><strong>{number(stats["products"])}</strong></div></div>'
+                f'{progress}<div class="live-saved">Последнее сохранение<br>{latest}</div>'
+                f'<div class="live-next">Следующий сбор <strong>{next_at:%H:%M} МСК</strong></div></div>',
+                unsafe_allow_html=True)
+
+
+@st.fragment(run_every="10s")
+def show_collection_overview(cfg: Settings, query_id: int) -> None:
+    store = Store(cfg.database_path, readonly=True)
+    _, stats = live_collection(cfg)
+    st.markdown("#### Накопленные данные")
+    columns = st.columns(4)
+    for column, label, field, help_text in zip(columns,
+            ('Наблюдений', 'Уникальных товаров', 'Снимков выдачи', 'Активных запросов'),
+            ('observations', 'products', 'snapshots', 'active_queries'),
+            ('Один товар в одном сборе. Повторный сбор сохраняется как новое наблюдение.',
+             'Разные артикулы во всех запросах, без повторного подсчёта.',
+             'Сохранённые полные и неполные выдачи с товарами.', 'Запросы с включённым сбором.'), strict=True):
+        with column:
+            st.metric(label, number(stats[field]), help=help_text)
+    queries = store.queries_dashboard(include_paused=True)
+    st.markdown("#### Состояние запросов")
+    monitor = pd.DataFrame(queries)
+    monitor["last_status"] = monitor["last_status"].map(STATUS_LABELS).fillna("Нет запусков")
+    for column in ("last_attempt", "last_success"):
+        monitor[column] = monitor[column].map(display_time)
+    monitor["last_count"] = monitor["last_count"].astype("Int64")
+    monitor = monitor.rename(columns={"phrase": "Запрос", "last_status": "Статус",
+        "last_attempt": "Последний запуск", "last_success": "Последний полный", "last_count": "Товаров"})
+    st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний запуск", "Последний полный"]],
+                 hide_index=True, width="stretch", height=350, placeholder="—")
+    st.markdown("#### Запуски выбранного запроса")
+    runs = store.recent_runs(query_id, limit=200)
+    if runs:
+        table = pd.DataFrame(runs)
+        table["status"] = table["status"].map(STATUS_LABELS)
+        for column in ("started_at", "completed_at"):
+            table[column] = table[column].map(display_time)
+        table = table.rename(columns={"started_at": "Начало", "completed_at": "Конец",
+            "status": "Статус", "observed_count": "Товаров", "requested_top_n": "Цель", "error": "Причина"})
+        st.dataframe(table[["Начало", "Конец", "Статус", "Товаров", "Цель", "Причина"]],
+                     hide_index=True, width="stretch", placeholder="—")
+    else:
+        st.info("Запусков пока нет.")
 
 
 def show_product_cards(summaries: list[dict], titles: dict, colors: dict, metric: str) -> None:
@@ -332,10 +424,7 @@ def main() -> None:
                                  max_value=today, format="DD.MM.YYYY")
         if st.button("Обновить", width="stretch", help="Перечитать сохранённые данные"):
             st.rerun()
-        active_count = sum(q['enabled'] for q in queries)
-        next_at = next_collection(datetime.now(timezone.utc), cfg.collection_period_seconds).astimezone(MSK)
-        st.markdown(f'<div class="schedule">Следующий сбор<strong>{next_at:%H:%M} МСК</strong>'
-                    f'<span>Активных запросов: {active_count}</span></div>', unsafe_allow_html=True)
+        show_live_status(cfg)
 
     query = lookup[query_id]
     latest_rows = store.latest_observations(query_id, include_partial=True)
@@ -401,28 +490,7 @@ def main() -> None:
         else:
             st.info("Сохранённых товаров пока нет.")
     with operations:
-        st.markdown("#### Состояние запросов")
-        monitor = pd.DataFrame(queries)
-        monitor["last_status"] = monitor["last_status"].map(STATUS_LABELS).fillna("Нет запусков")
-        for column in ("last_attempt", "last_success"):
-            monitor[column] = monitor[column].map(display_time)
-        monitor["last_count"] = monitor["last_count"].astype("Int64")
-        monitor = monitor.rename(columns={"phrase": "Запрос", "last_status": "Статус",
-            "last_attempt": "Последний запуск", "last_success": "Последний полный", "last_count": "Товаров"})
-        st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний запуск", "Последний полный"]],
-                     hide_index=True, width="stretch", height=350, placeholder="—")
-        st.markdown("#### Запуски выбранного запроса")
-        if runs:
-            table = pd.DataFrame(runs)
-            table["status"] = table["status"].map(STATUS_LABELS)
-            for column in ("started_at", "completed_at"):
-                table[column] = table[column].map(display_time)
-            table = table.rename(columns={"started_at": "Начало", "completed_at": "Конец",
-                "status": "Статус", "observed_count": "Товаров", "requested_top_n": "Цель", "error": "Причина"})
-            st.dataframe(table[["Начало", "Конец", "Статус", "Товаров", "Цель", "Причина"]],
-                         hide_index=True, width="stretch", placeholder="—")
-        else:
-            st.info("Запусков пока нет.")
+        show_collection_overview(cfg, query_id)
 
     with management:
         show_query_management(cfg, queries)
