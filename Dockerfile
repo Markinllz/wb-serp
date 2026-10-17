@@ -28,6 +28,14 @@ USER app
 
 CMD ["python", "-m", "wb_serp.cli", "worker"]
 
+FROM python:3.12-slim AS metrics
+WORKDIR /app
+COPY requirements-monitoring.txt .
+RUN pip install --no-cache-dir -r requirements-monitoring.txt
+COPY wb_serp/metrics.py /app/metrics.py
+USER 10001:10001
+CMD ["python", "-u", "/app/metrics.py"]
+
 FROM browser-deps AS browser
 COPY --from=app /app /app
 WORKDIR /home/app

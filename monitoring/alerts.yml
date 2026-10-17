@@ -1,0 +1,58 @@
+groups:
+  - name: platform
+    rules:
+      - alert: MonitoringTargetDown
+        expr: up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'Нет метрик {{ $labels.job }}'}
+      - alert: DashboardUnavailable
+        expr: probe_success == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'Проверка {{ $labels.job }} не проходит'}
+      - alert: DatabaseUnavailable
+        expr: wb_database_up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'База данных недоступна для чтения'}
+      - alert: CollectionStale
+        expr: time() - wb_query_last_valid_timestamp_seconds > 7200
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'Нет свежего снимка: {{ $labels.query }}'}
+      - alert: WildberriesBlocked
+        expr: sum(wb_query_latest_status{status="blocked"}) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'WB отклонил запросы сборщика'}
+      - alert: CollectionErrors
+        expr: sum(wb_query_latest_status{status=~"failed|interrupted"}) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'Есть ошибочные или прерванные сборы'}
+      - alert: DiskSpaceLow
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.15
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'На диске осталось меньше 15%'}
+      - alert: MemoryPressure
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'Доступно меньше 10% памяти'}
+      - alert: BackupOverdue
+        expr: (time() - wb_backup_success_timestamp_seconds > 93600) or absent(wb_backup_success_timestamp_seconds)
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'Нет подтверждённой резервной копии за 26 часов'}
+      - alert: TLSCertificateExpiring
+        expr: probe_ssl_earliest_cert_expiry - time() < 1209600
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'Сертификат HTTPS истекает менее чем через 14 дней'}
+      - alert: CollectorMissing
+        expr: absent(container_last_seen{container_label_com_docker_compose_service="collector",container_label_com_docker_compose_oneoff!="True"} > time() - 90)
+        for: 10m
+        labels: {severity: critical}
+        annotations: {summary: 'Фоновый сборщик не запущен'}

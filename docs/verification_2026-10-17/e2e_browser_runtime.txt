@@ -1,6 +1,0 @@
-test_real_chromium_fetches_top200_and_rotates_cookies (tests.test_browser_runtime.BrowserRuntimeTest.test_real_chromium_fetches_top200_and_rotates_cookies) ... ok
-
-----------------------------------------------------------------------
-Ran 1 test in 0.477s
-
-OK

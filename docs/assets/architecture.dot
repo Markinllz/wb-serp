@@ -1,0 +1,39 @@
+digraph Architecture {
+  graph [rankdir=LR, bgcolor="white", pad="0.4", nodesep="0.5", ranksep="0.7", fontname="Arial", fontsize=22, label="WB SERP", labelloc=t, compound=true];
+  node [shape=box, style="rounded,filled", fillcolor="#f4f7fc", color="#c8d4e5", fontcolor="#172b4d", fontname="Arial", fontsize=13, margin="0.2,0.15"];
+  edge [color="#8798b0", fontcolor="#506580", fontname="Arial", fontsize=10, arrowsize=0.7];
+  browser [label="Браузер\nпанель · CSV · мониторинг", fillcolor="#ffffff"];
+  proxy [label="Caddy\nHTTPS · пароль", fillcolor="#e7efff", color="#4e79bf"];
+  subgraph cluster_product {
+    label="Продукт"; color="#d9e3f1"; style=rounded; fontname="Arial"; fontsize=15;
+    ui [label="Streamlit + Plotly\nпозиции · цены · товары"];
+    db [label="SQLite WAL\nистория снимков", shape=cylinder, fillcolor="#fff4dd", color="#d7ac51"];
+    worker [label="Collector + Chromium\nпочасовой сбор · повторы"];
+    phrases [label="70 фраз\nфиксированный регион", shape=note];
+    backup [label="SQLite Online Backup\nежедневно · проверка копии", fillcolor="#faf9f5"];
+    phrases -> worker;
+    worker -> db [label="запись"];
+    ui -> db [label="чтение"];
+    backup -> db [label="копия", style=dashed];
+  }
+  wb [label="Wildberries\nпоисковая выдача", fillcolor="#f4eafa", color="#b98acb"];
+  subgraph cluster_monitoring {
+    label="Мониторинг"; color="#d4e6dc"; style=rounded; fontname="Arial"; fontsize=15;
+    node [fillcolor="#edf7f1", color="#9dbca9"];
+    grafana [label="Grafana\nсостояние платформы"];
+    prometheus [label="Prometheus\nметрики · правила · 7 дней"];
+    metrics [label="Экспортёр приложения\nсвежесть · статусы · глубина"];
+    exporters [label="Node Exporter · cAdvisor\nCPU · память · диск · контейнеры"];
+    blackbox [label="Blackbox Exporter\nHTTP · HTTPS · сертификат"];
+    grafana -> prometheus [label="запросы"];
+    prometheus -> metrics [label="30 с"];
+    prometheus -> exporters;
+    prometheus -> blackbox;
+  }
+  browser -> proxy;
+  proxy -> ui;
+  proxy -> grafana [label="/grafana/"];
+  worker -> wb [label="поиск"];
+  metrics -> db [label="только чтение", style=dashed];
+  blackbox -> proxy [label="проверка", style=dashed, constraint=false];
+}

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+wb_backup_dir=/var/backups/wb-serp
+wb_backup_name="wb-serp-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
+install -d -m 0700 "$wb_backup_dir"
+test ! -e "$wb_backup_dir/$wb_backup_name.gz"
+wb_backup_work=$(mktemp -d "$wb_backup_dir/.work.XXXXXX")
+trap 'rm -rf -- "$wb_backup_work"' EXIT
+chown 10001:10001 "$wb_backup_work"
+# SQLite opens the source mode=ro; WAL shared-memory locks need a writable mount.
+docker run --rm --network none --read-only --user 10001:10001 \
+    -e WB_DB_PATH=/app/data/serp.db \
+    --mount type=volume,source=wb-serp_wb_data,target=/app/data \
+    --mount "type=bind,source=$wb_backup_work,target=/backups" \
+    wb-serp-dashboard:local python /app/scripts/backup.py "/backups/$wb_backup_name"
+chown root:root "$wb_backup_work/$wb_backup_name"
+chmod 600 "$wb_backup_work/$wb_backup_name"
+gzip "$wb_backup_work/$wb_backup_name"
+mv "$wb_backup_work/$wb_backup_name.gz" "$wb_backup_dir/$wb_backup_name.gz"
+install -d -m 0755 /var/lib/wb-serp-monitoring
+wb_metric_tmp=$(mktemp /var/lib/wb-serp-monitoring/backup.XXXXXX)
+printf 'wb_backup_success_timestamp_seconds %s\n' "$(date +%s)" > "$wb_metric_tmp"
+chmod 0644 "$wb_metric_tmp"
+mv "$wb_metric_tmp" /var/lib/wb-serp-monitoring/backup.prom
+find "$wb_backup_dir" -maxdepth 1 -type f -name 'wb-serp-*.sqlite.gz' -mtime +7 -delete
+echo "Backup verified and compressed: $wb_backup_name.gz"

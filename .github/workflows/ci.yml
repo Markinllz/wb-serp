@@ -20,3 +20,11 @@ jobs:
         run: ruff check .
       - name: Unit and integration tests
         run: python -m pytest
+      - name: Validate monitoring
+        env:
+          GRAFANA_ADMIN_PASSWORD: ci-validation-only
+          APP_DOMAIN: serp.example.com
+        run: |
+          docker compose -f compose.yaml -f compose.browser.yaml -f compose.monitoring.yaml --profile public config --quiet
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/monitoring:/etc/prometheus:ro" -w /etc/prometheus prom/prometheus:v3.15.0 check config prometheus.yml
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/monitoring:/etc/prometheus:ro" -w /etc/prometheus prom/prometheus:v3.15.0 test rules rules.test.yml

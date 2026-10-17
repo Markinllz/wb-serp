@@ -1,3 +1,4 @@
 -r requirements.txt
+-r requirements-monitoring.txt
 pytest>=8.0,<10.0
 ruff>=0.11,<1.0

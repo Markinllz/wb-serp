@@ -1,0 +1,12 @@
+[Unit]
+Description=Wildberries SERP verified SQLite backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=300
+ExecStart=/usr/local/sbin/wb-serp-backup

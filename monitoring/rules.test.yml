@@ -1,0 +1,59 @@
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+tests:
+  - name: stale data raises warning
+    interval: 1m
+    input_series:
+      - series: 'wb_query_last_valid_timestamp_seconds{query_id="1",query="test"}'
+        values: '0+0x140'
+    alert_rule_test:
+      - eval_time: 132m
+        alertname: CollectionStale
+        exp_alerts:
+          - exp_labels: {query_id: '1', query: test, severity: warning}
+            exp_annotations: {summary: 'Нет свежего снимка: test'}
+  - name: fresh partial snapshot is valid data
+    interval: 1m
+    input_series:
+      - series: 'wb_query_last_valid_timestamp_seconds{query_id="19",query="narrow"}'
+        values: '0+60x180'
+      - series: 'wb_query_latest_status{query_id="19",query="narrow",status="partial"}'
+        values: '1+0x180'
+    alert_rule_test:
+      - eval_time: 180m
+        alertname: CollectionStale
+        exp_alerts: []
+      - eval_time: 180m
+        alertname: CollectionErrors
+        exp_alerts: []
+  - name: unavailable target raises critical alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="product"}'
+        values: '0+0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: MonitoringTargetDown
+        exp_alerts:
+          - exp_labels: {job: product, severity: critical}
+            exp_annotations: {summary: 'Нет метрик product'}
+  - name: one-off check cannot mask missing background collector
+    interval: 1m
+    input_series:
+      - series: 'container_last_seen{container_label_com_docker_compose_service="collector",container_label_com_docker_compose_oneoff="True"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: CollectorMissing
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: 'Фоновый сборщик не запущен'}
+  - name: fresh background collector is available
+    interval: 1m
+    input_series:
+      - series: 'container_last_seen{container_label_com_docker_compose_service="collector",container_label_com_docker_compose_oneoff="False"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: CollectorMissing
+        exp_alerts: []
