@@ -258,6 +258,17 @@ class Store:
         with self.connect() as db:
             return db.execute("SELECT id, phrase FROM search_queries WHERE enabled=1 AND archived=0 ORDER BY display_order").fetchall()
 
+    def collection_queue(self) -> list[sqlite3.Row]:
+        """Collect missing data first, then refresh the oldest usable snapshots."""
+        with self.connect() as db:
+            return db.execute("""SELECT q.id, q.phrase,
+                (SELECT max(r.started_at) FROM collection_runs r WHERE r.query_id=q.id) AS last_attempt,
+                (SELECT max(r.started_at) FROM collection_runs r WHERE r.query_id=q.id
+                 AND r.status IN ('success','partial') AND r.observed_count>0) AS last_valid
+                FROM search_queries q WHERE q.enabled=1 AND q.archived=0
+                ORDER BY last_attempt IS NOT NULL, last_valid IS NOT NULL,
+                    COALESCE(last_valid,last_attempt), q.display_order, q.id""").fetchall()
+
     def archive_query(self, query_id: int, archived: bool = True) -> None:
         if self.readonly or not isinstance(archived, bool):
             raise ValueError('Cannot change query archive state')
@@ -393,6 +404,9 @@ class Store:
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_attempt,
                 (SELECT started_at FROM collection_runs r WHERE r.query_id=q.id AND r.status='success'
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_success,
+                (SELECT started_at FROM collection_runs r WHERE r.query_id=q.id
+                 AND r.status IN ('success','partial') AND r.observed_count>0
+                 ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_valid,
                 (SELECT observed_count FROM collection_runs r WHERE r.query_id=q.id
                  ORDER BY started_at DESC, rowid DESC LIMIT 1) AS last_count
                 FROM search_queries q WHERE (? OR q.enabled=1) AND (? OR q.archived=0) ORDER BY q.display_order,q.id""",

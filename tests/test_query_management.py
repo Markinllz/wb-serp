@@ -109,7 +109,7 @@ def test_query_changes_apply_to_next_cycle_without_touching_current_snapshot(tmp
     assert calls == ["Первая", "Вторая"]
     calls.clear()
     cli.run_cycle(cfg, store, scheduled_for="2026-10-17T02:00:00+00:00")
-    assert calls == ["Первая", "Третья"]
+    assert calls == ["Третья", "Первая"]
     assert store.latest_observations(second)[0]["nm_id"] == 123
 
 

@@ -147,8 +147,11 @@ def test_dashboard_complete_read_only_flow_with_charts_and_csv_exports(tmp_path,
     assert (latest["Без Кошелька, ₽"] == 100.99).all()
     st.session_state["view"] = "Сбор данных"
     app.main()
-    monitor = next(frame for frame in st.frames if "Последний полный" in frame)
+    monitor = next(frame for frame in st.frames if "Последний сбор" in frame)
     assert len(monitor) == 2
+    assert list(monitor.columns) == ['Запрос', 'Статус', 'Товаров', 'Последний сбор']
+    assert monitor.loc[monitor['Запрос']=='пастельный комплект 1,5','Статус'].iloc[0] == 'В очереди'
+    assert not any('Цель' in frame for frame in st.frames)
     st.session_state["view"] = "Аналитика"
     st.session_state[f"history_metric_{query['id']}"] = "Цены"
     st.plots.clear()

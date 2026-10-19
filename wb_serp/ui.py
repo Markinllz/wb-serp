@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
 import html
+import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -84,6 +85,22 @@ def number(value: int) -> str:
     return f"{value:,}".replace(",", " ")
 
 
+def collection_note(error: str | None) -> str | None:
+    if not error:
+        return None
+    if match := re.search(r'WB reports total=(\d+)', error):
+        return f'WB вернул {match[1]} товаров.'
+    if 'Duplicate nm_id' in error:
+        return 'Выдача изменилась между страницами.'
+    if 'WB request failed after ' in error:
+        return 'Не удалось загрузить страницу WB. Повтор по расписанию.'
+    if 'denied/rate-limited' in error:
+        return 'WB временно ограничил доступ.'
+    if error.startswith(('Empty page', 'Reached page_limit')):
+        return 'WB вернул меньше товаров, чем запрошено.'
+    return 'Сбор не завершён. Повтор по расписанию.'
+
+
 @st.fragment(run_every="15m")
 def show_live_status(cfg: Settings) -> None:
     runtime, stats = live_collection(cfg)
@@ -115,6 +132,8 @@ def show_live_status(cfg: Settings) -> None:
     latest = display_time(stats['last_saved_at'])
     next_at = next_collection(datetime.now(timezone.utc), cfg.collection_period_seconds).astimezone(MSK)
     next_label = f'Следующий сбор <strong>{next_at:%H:%M} МСК</strong>' if options['enabled'] else 'Автоматический сбор приостановлен'
+    if options['enabled'] and runtime.get('alive') and runtime['state'] == 'collecting':
+        next_label = 'Запросы собираются по очереди'
     st.markdown(f'<div class="live-panel"><div class="live-title">Сбор данных</div>'
                 f'<div class="live-status {tone}"><i></i>{label}</div>'
                 f'<div class="live-totals"><div><span>Наблюдений</span><strong>{number(stats["observations"])}</strong></div>'
@@ -144,13 +163,13 @@ def show_collection_overview(cfg: Settings, query_id: int | None) -> None:
         st.info("Добавьте поисковый запрос в разделе «Запросы».")
         return
     monitor = pd.DataFrame(queries)
-    monitor["last_status"] = monitor["last_status"].map(STATUS_LABELS).fillna("Нет запусков")
-    for column in ("last_attempt", "last_success"):
-        monitor[column] = monitor[column].map(display_time)
+    monitor["last_status"] = [STATUS_LABELS.get(q['last_status'],
+        'В очереди' if q['enabled'] else 'На паузе') for q in queries]
+    monitor['last_valid'] = monitor['last_valid'].map(display_time)
     monitor["last_count"] = monitor["last_count"].astype("Int64")
     monitor = monitor.rename(columns={"phrase": "Запрос", "last_status": "Статус",
-        "last_attempt": "Последний запуск", "last_success": "Последний полный", "last_count": "Товаров"})
-    st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний запуск", "Последний полный"]],
+        "last_valid": "Последний сбор", "last_count": "Товаров"})
+    st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний сбор"]],
                  hide_index=True, width="stretch", height=350, placeholder="—")
     st.markdown("#### История сборов")
     query_map = {q['id']: q['phrase'] for q in queries}
@@ -161,11 +180,12 @@ def show_collection_overview(cfg: Settings, query_id: int | None) -> None:
     if runs:
         table = pd.DataFrame(runs)
         table["status"] = table["status"].map(STATUS_LABELS)
+        table['error'] = table['error'].map(collection_note)
         for column in ("started_at", "completed_at"):
             table[column] = table[column].map(display_time)
         table = table.rename(columns={"started_at": "Начало", "completed_at": "Конец",
-            "status": "Статус", "observed_count": "Товаров", "requested_top_n": "Цель", "error": "Причина"})
-        st.dataframe(table[["Начало", "Конец", "Статус", "Товаров", "Цель", "Причина"]],
+            "status": "Статус", "observed_count": "Товаров", "error": "Примечание"})
+        st.dataframe(table[["Начало", "Статус", "Товаров", "Примечание"]],
                      hide_index=True, width="stretch", placeholder="—")
     else:
         st.info("Запусков пока нет.")

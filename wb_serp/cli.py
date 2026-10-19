@@ -85,7 +85,7 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
                 or not store.collection_options(cfg.top_n)['enabled'])
     slot = scheduled_for or datetime.now(timezone.utc).replace(
         minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
-    queries = store.enabled_queries()
+    queries = store.collection_queue()
     if phrase is not None:
         queries = [q for q in queries if q["phrase"] == phrase]
         if not queries:
@@ -109,12 +109,13 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
                 if should_stop is not None and should_stop():
                     break
             result = collector.collect(query["id"], query["phrase"], scheduled_for=slot)
-            if (result.status == "failed" and result.error
-                    and result.error.startswith("Invalid SERP data: Duplicate nm_id=")):
+            if (result.status == "failed" and result.error and (
+                    result.error.startswith("Invalid SERP data: Duplicate nm_id=")
+                    or (result.observed > 0 and result.error.startswith('WB request failed after ')))):
                 # Pagination may change between requests. Keep the failed attempt
                 # and retry from page 1 once, just as in the diagnostic batch.
                 if should_stop is None or not should_stop():
-                    log.warning("Duplicate ranks for %s; retrying the entire snapshot once",
+                    log.warning("Incomplete or unstable pages for %s; retrying the entire snapshot once",
                                 query["phrase"])
                     if cfg.query_delay_seconds:
                         time.sleep(cfg.query_delay_seconds)
