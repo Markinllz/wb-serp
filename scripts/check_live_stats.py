@@ -72,7 +72,7 @@ def main():
         expect(page.get_by_test_id('stException')).to_have_count(0)
         assert not errors and not outside, (errors, outside)
         browser.close()
-    report = {'status':'PASS', 'auto_refresh_minutes':15, 'manual_counter_update':True, 'cycle_progress':True,
+    report = {'status':'PASS', 'auto_refresh_minutes':5, 'manual_counter_update':True, 'cycle_progress':True,
               'blocked_state':True, 'stopped_state':True, 'graph_preserved_between_refreshes':True,
               'observations_before':before, 'observations_after':before+2,
               'external_requests':outside, 'javascript_errors':errors}

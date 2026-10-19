@@ -58,7 +58,7 @@ def snapshot_table(rows: list[dict]) -> pd.DataFrame:
     })
 
 
-@st.cache_data(ttl=900, max_entries=64, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=64, show_spinner=False)
 def collection_statistics(database: str, slot: str, depth: int, query_ids: tuple | None) -> dict:
     return Store(Path(database), readonly=True).collection_stats(
         slot=slot, depth=depth, query_ids=query_ids)
@@ -101,7 +101,7 @@ def collection_note(error: str | None) -> str | None:
     return 'Сбор не завершён. Повтор по расписанию.'
 
 
-@st.fragment(run_every="15m")
+@st.fragment(run_every="5m")
 def show_live_status(cfg: Settings) -> None:
     runtime, stats = live_collection(cfg)
     options = Store(cfg.database_path, readonly=True).collection_options(cfg.top_n)
@@ -143,10 +143,10 @@ def show_live_status(cfg: Settings) -> None:
                 unsafe_allow_html=True)
 
 
-@st.fragment(run_every="15m")
+@st.fragment(run_every="5m")
 def show_collection_overview(cfg: Settings, query_id: int | None) -> None:
     store = Store(cfg.database_path, readonly=True)
-    _, stats = live_collection(cfg)
+    runtime, stats = live_collection(cfg)
     st.markdown("#### Накопленные данные")
     columns = st.columns(4)
     for column, label, field, help_text in zip(columns,
@@ -169,8 +169,21 @@ def show_collection_overview(cfg: Settings, query_id: int | None) -> None:
     monitor["last_count"] = monitor["last_count"].astype("Int64")
     monitor = monitor.rename(columns={"phrase": "Запрос", "last_status": "Статус",
         "last_valid": "Последний сбор", "last_count": "Товаров"})
-    st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний сбор"]],
-                 hide_index=True, width="stretch", height=350, placeholder="—")
+    queue_tab, all_tab = st.tabs(['Очередь', 'Все запросы'])
+    with queue_tab:
+        phrases = {q['id']: q['phrase'] for q in queries}
+        current = stats['current_query_id'] if runtime.get('alive') and runtime.get('state') == 'collecting' else None
+        ids = ([current] if current else []) + [qid for qid in stats['pending_query_ids'] if qid != current]
+        queue = [{'Очередь': 'Сейчас' if qid == current else str(i + (0 if current else 1)),
+                  'Запрос': phrases.get(qid, 'Удалённый запрос'),
+                  'Статус': 'Идёт сбор' if qid == current else 'В очереди'} for i, qid in enumerate(ids)]
+        if queue:
+            st.dataframe(pd.DataFrame(queue), hide_index=True, width='stretch', height=300)
+        else:
+            st.info('В очереди нет запросов.')
+    with all_tab:
+        st.dataframe(monitor[["Запрос", "Статус", "Товаров", "Последний сбор"]],
+                     hide_index=True, width="stretch", height=350, placeholder="—")
     st.markdown("#### История сборов")
     query_map = {q['id']: q['phrase'] for q in queries}
     query_id = st.selectbox('Запрос для истории сборов', options=list(query_map),
@@ -542,7 +555,7 @@ def main() -> None:
         show_live_status(cfg)
         if st.button('Обновить данные', width='stretch'):
             refresh_dashboard()
-        st.caption('Автообновление каждые 15 минут')
+        st.caption('Автообновление каждые 5 минут')
     notice = st.session_state.pop('query_notice', None)
     if notice:
         st.success(notice)

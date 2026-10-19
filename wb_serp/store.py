@@ -436,13 +436,16 @@ class Store:
                         row_number() OVER (PARTITION BY query_id ORDER BY started_at DESC,r.rowid DESC) AS n
                     FROM collection_runs r JOIN search_queries q ON q.id=r.query_id
                     WHERE scheduled_for=? AND requested_top_n=? AND query_id IN ({placeholders})
-                ) SELECT status,observed_count,phrase FROM attempts WHERE n=1""",
+                ) SELECT query_id,status,observed_count,phrase FROM attempts WHERE n=1""",
                     (slot, depth, *query_ids)).fetchall()
             else:
                 rows = []
         counts = {state: sum(r['status'] == state for r in rows)
                   for state in ('success', 'partial', 'failed', 'blocked', 'interrupted', 'running')}
+        finished = {r['query_id'] for r in rows if r['status'] != 'running'}
         return {**totals, 'slot': slot, 'target': len(query_ids),
+                'pending_query_ids': [qid for qid in query_ids if qid not in finished],
+                'current_query_id': next((r['query_id'] for r in rows if r['status'] == 'running'), None),
                 'processed': sum(n for state, n in counts.items() if state != 'running'),
                 'counts': counts,
                 'cycle_observations': sum(r['observed_count'] for r in rows
