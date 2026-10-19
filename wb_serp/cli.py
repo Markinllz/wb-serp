@@ -90,7 +90,7 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
         queries = [q for q in queries if q["phrase"] == phrase]
         if not queries:
             raise ValueError(f"Query not configured: {phrase}")
-    completed, skipped, failed = 0, 0, 0
+    completed, skipped, failed, connection_failures = 0, 0, 0, 0
     if runtime:
         runtime.update("collecting", scheduled_for=slot, query_ids=[q["id"] for q in queries],
                        cycle_started_at=datetime.now(timezone.utc).isoformat(), top_n=cfg.top_n)
@@ -123,8 +123,13 @@ def _run_cycle_locked(cfg: Settings, store: Store, *, phrase: str | None,
             completed += 1
             if result.status != "success":
                 failed += 1
+            connection_failures = (connection_failures + 1 if result.status == 'failed'
+                and (result.error or '').startswith('WB request failed after ') else 0)
             if result.status == "blocked":
                 log.error("WB blocked requests. Ending this cycle instead of hammering the endpoint")
+                break
+            if connection_failures >= 3:
+                log.error('Three consecutive connection failures; defer remaining queries to the next cycle')
                 break
     log.info("Cycle %s done: attempted=%s, skipped successful=%s, failed=%s",
              slot, completed, skipped, failed)

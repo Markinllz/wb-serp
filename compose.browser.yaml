@@ -5,6 +5,9 @@ services:
       context: .
       target: browser
     image: wb-serp-browser:local
+    cpus: 1.5
+    mem_limit: 2g
+    memswap_limit: 2560m
     environment:
       WB_HTTP_TRANSPORT: browser
       WB_BROWSER_ENGINE: cdp

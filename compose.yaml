@@ -26,6 +26,9 @@ x-app: &app
     WB_BROWSER_ENGINE: ${WB_BROWSER_ENGINE:-playwright}
     WB_REQUEST_TIMEOUT_SECONDS: ${WB_REQUEST_TIMEOUT_SECONDS:-20}
   shm_size: 256mb
+  cpus: 1.0
+  mem_limit: 640m
+  memswap_limit: 768m
   volumes:
     - wb_data:/app/data
   security_opt:

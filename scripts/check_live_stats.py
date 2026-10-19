@@ -1,4 +1,4 @@
-"""Verify automatic counters on a disposable copy; never contact WB."""
+"""Verify manual refresh and stable counters on a disposable copy; never contact WB."""
 from datetime import datetime, timezone
 import json
 
@@ -49,27 +49,31 @@ def main():
             store.complete_run(run_id='ui-live-1', status='partial', finished_at=datetime.now(timezone.utc),
                                products=[Product(nm, i, None, None, None, None, None, 'UI fixture')
                                          for i, nm in enumerate((990000000001, 990000000002), 1)])
+            page.wait_for_timeout(6000)
+            expect(page.locator('.live-totals strong').first).to_have_text(f'{before:,}'.replace(',', ' '))
+            expect(chart).to_have_attribute('data-zoom-proof', 'preserved')
+            page.get_by_role('button', name='Обновить данные', exact=True).click()
             expect(page.locator('.live-totals strong').first).to_have_text(f'{before+2:,}'.replace(',', ' '))
             expect(page.locator('.live-panel progress')).to_have_attribute('value', '1')
-            expect(chart).to_have_attribute('data-zoom-proof', 'preserved')
             now = datetime.now(timezone.utc)
             store.start_run(run_id='ui-live-2', query_id=ids[1], scheduled_for=slot,
                             started_at=now, requested_top_n=200, destination=cfg.destination)
             store.complete_run(run_id='ui-live-2', status='blocked', finished_at=now, products=[])
             heartbeat.update('waiting')
-            expect(page.locator('.live-status')).to_have_text('WB ограничил сбор')
+            page.get_by_role('button', name='Обновить данные', exact=True).click()
+            expect(page.locator('.live-status')).to_have_text('WB ограничил доступ до следующего цикла')
             expect(page.locator('.live-panel progress')).to_have_attribute('value', '2')
             expect(page.locator('.live-totals strong').first).to_have_text(f'{before+2:,}'.replace(',', ' '))
+        page.get_by_role('button', name='Обновить данные', exact=True).click()
         expect(page.locator('.live-status')).to_have_text('Сборщик остановлен')
-        expect(chart).to_have_attribute('data-zoom-proof', 'preserved')
         page.get_by_test_id('stSidebar').get_by_text('Сбор данных', exact=True).first.click()
         metric = page.get_by_test_id('stMetric').filter(has_text='Наблюдений')
         expect(metric.get_by_test_id('stMetricValue')).to_have_text(f'{before+2:,}'.replace(',', ' '))
         expect(page.get_by_test_id('stException')).to_have_count(0)
         assert not errors and not outside, (errors, outside)
         browser.close()
-    report = {'status':'PASS', 'automatic_counter_update':True, 'cycle_progress':True,
-              'blocked_state':True, 'stopped_state':True, 'graph_preserved':True,
+    report = {'status':'PASS', 'auto_refresh_minutes':15, 'manual_counter_update':True, 'cycle_progress':True,
+              'blocked_state':True, 'stopped_state':True, 'graph_preserved_between_refreshes':True,
               'observations_before':before, 'observations_after':before+2,
               'external_requests':outside, 'javascript_errors':errors}
     output = cfg.database_path.parent / 'dashboard-check' / cfg.database_path.stem

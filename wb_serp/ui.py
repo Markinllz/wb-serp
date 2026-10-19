@@ -57,14 +57,26 @@ def snapshot_table(rows: list[dict]) -> pd.DataFrame:
     })
 
 
+@st.cache_data(ttl=900, max_entries=64, show_spinner=False)
+def collection_statistics(database: str, slot: str, depth: int, query_ids: tuple | None) -> dict:
+    return Store(Path(database), readonly=True).collection_stats(
+        slot=slot, depth=depth, query_ids=query_ids)
+
+
+def refresh_dashboard() -> None:
+    collection_statistics.clear()
+    st.rerun()
+
+
 def live_collection(cfg: Settings) -> tuple[dict, dict]:
     runtime = read_worker_status(cfg.database_path)
     now = datetime.now(timezone.utc)
     slot = runtime.get("scheduled_for") or datetime.fromtimestamp(
         int(now.timestamp()) // cfg.collection_period_seconds * cfg.collection_period_seconds,
         timezone.utc).isoformat(timespec="seconds")
-    stats = Store(cfg.database_path, readonly=True).collection_stats(
-        slot=slot, depth=runtime.get("top_n", cfg.top_n), query_ids=runtime.get("query_ids"))
+    ids = runtime.get('query_ids')
+    stats = collection_statistics(str(cfg.database_path), slot, runtime.get('top_n', cfg.top_n),
+                                  tuple(ids) if ids is not None else None)
     return runtime, stats
 
 
@@ -72,7 +84,7 @@ def number(value: int) -> str:
     return f"{value:,}".replace(",", " ")
 
 
-@st.fragment(run_every="5s")
+@st.fragment(run_every="15m")
 def show_live_status(cfg: Settings) -> None:
     runtime, stats = live_collection(cfg)
     options = Store(cfg.database_path, readonly=True).collection_options(cfg.top_n)
@@ -82,9 +94,9 @@ def show_live_status(cfg: Settings) -> None:
         elif not options['enabled']:
             label, tone = 'Сбор на паузе', 'ready'
         elif stats['counts']['blocked']:
-            label, tone = 'WB ограничил сбор', 'error'
+            label, tone = 'WB ограничил доступ до следующего цикла', 'error'
         elif stats['counts']['failed'] or stats['counts']['interrupted']:
-            label, tone = 'Сбор завершён с ошибками', 'error'
+            label, tone = 'Часть запросов не собрана. Повтор в следующем цикле', 'error'
         else:
             label, tone = 'Ожидание следующего сбора', 'ready'
     else:
@@ -112,7 +124,7 @@ def show_live_status(cfg: Settings) -> None:
                 unsafe_allow_html=True)
 
 
-@st.fragment(run_every="10s")
+@st.fragment(run_every="15m")
 def show_collection_overview(cfg: Settings, query_id: int | None) -> None:
     store = Store(cfg.database_path, readonly=True)
     _, stats = live_collection(cfg)
@@ -186,8 +198,9 @@ def show_product_cards(summaries: list[dict], titles: dict, colors: dict, metric
                      f'target="_blank" rel="noopener noreferrer" title="{title}">{title}</a>'
                      f'<div class="product-footer"><span class="product-number">{shown}</span>'
                      f'<span class="product-delta {tone}">{change}</span></div>'
-                     '<div class="product-hint">К предыдущему сбору в периоде</div></div>')
+                     '</div>')
     st.markdown('<div class="product-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+    st.caption('Изменения относительно предыдущего сохранённого сбора.')
 
 
 def show_query_management(cfg: Settings, queries: list[dict]) -> None:
@@ -204,7 +217,7 @@ def show_query_management(cfg: Settings, queries: list[dict]) -> None:
             else:
                 st.session_state['pending_query_id'] = query_id
                 st.session_state['query_notice'] = 'Запрос добавлен.' if created else 'Сбор запроса включён.'
-                st.rerun()
+                refresh_dashboard()
     if queries:
         options = {q['id']: q for q in queries}
         target_id = st.selectbox('Выберите запрос', options=list(options), key='managed_query',
@@ -215,17 +228,17 @@ def show_query_management(cfg: Settings, queries: list[dict]) -> None:
             if st.button('Открыть аналитику', key='open_query', width='stretch', type='primary'):
                 st.session_state['pending_query_id'] = target_id
                 st.session_state['pending_view'] = 'Аналитика'
-                st.rerun()
+                refresh_dashboard()
         with second:
             if st.button('Приостановить запрос' if target['enabled'] else 'Включить запрос',
                          key='toggle_query', width='stretch'):
                 store.set_query_enabled(target_id, not bool(target['enabled']))
-                st.rerun()
+                refresh_dashboard()
         with third:
             if st.button('Удалить запрос', key='archive_query', width='stretch'):
                 store.archive_query(target_id)
                 st.session_state['query_notice'] = 'Запрос удалён из списка. Его можно восстановить ниже.'
-                st.rerun()
+                refresh_dashboard()
         table = pd.DataFrame([{'Запрос': q['phrase'],
             'Сбор': 'Каждый час' if q['enabled'] else 'Пауза',
             'Последнее обновление': display_time(q['last_attempt']), 'Товаров': q['last_count']}
@@ -240,7 +253,7 @@ def show_query_management(cfg: Settings, queries: list[dict]) -> None:
                 store.archive_query(archived_id, False)
                 st.session_state['pending_query_id'] = archived_id
                 st.session_state['query_notice'] = 'Запрос восстановлен на паузе. История доступна в аналитике.'
-                st.rerun()
+                refresh_dashboard()
 
 
 def show_collection_controls(cfg: Settings) -> None:
@@ -251,14 +264,14 @@ def show_collection_controls(cfg: Settings) -> None:
     if options['enabled']:
         if st.button('Остановить сбор', type='primary', key='stop_collection'):
             store.set_collection_options(enabled=False)
-            st.rerun()
+            refresh_dashboard()
         st.caption('Остановка завершает текущий запрос и ставит следующие сборы на паузу.')
     else:
         st.info('Завершается текущий запрос.' if runtime.get('alive') and runtime.get('state') == 'collecting'
                 else 'Сбор остановлен. История доступна для просмотра.')
         if st.button('Возобновить сбор', type='primary', key='resume_collection'):
             store.set_collection_options(enabled=True)
-            st.rerun()
+            refresh_dashboard()
     if 'collection_top_n' not in st.session_state:
         st.session_state['collection_top_n'] = options['top_n']
     with st.form('collection_depth'):
@@ -278,6 +291,11 @@ def show_history(store: Store, query_id: int, latest_rows: list[dict], product_t
     chosen_key = f"chosen_products_{query_id}"
     if chosen_key not in st.session_state:
         st.session_state[chosen_key] = [row["nm_id"] for row in latest_rows[:3]]
+    saved = st.session_state[chosen_key]
+    retained_ids = {p['nm_id'] for p in store.products_by_ids(query_id, saved)}
+    if any(nm not in retained_ids for nm in saved):
+        st.session_state[chosen_key] = ([nm for nm in saved if nm in retained_ids]
+                                       or [row['nm_id'] for row in latest_rows[:3]])
     st.markdown("### 1. Выберите товары")
     with st.container(key="product-picker"):
         search_key = f"catalog_search_{query_id}"
@@ -503,7 +521,8 @@ def main() -> None:
         st.divider()
         show_live_status(cfg)
         if st.button('Обновить данные', width='stretch'):
-            st.rerun()
+            refresh_dashboard()
+        st.caption('Автообновление каждые 15 минут')
     notice = st.session_state.pop('query_notice', None)
     if notice:
         st.success(notice)

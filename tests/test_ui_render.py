@@ -42,6 +42,11 @@ class FakeStreamlit(ModuleType):
         self.session_state = {}
         self.column_config = SimpleNamespace(NumberColumn=lambda **kw: kw, TextColumn=lambda **kw: kw, LinkColumn=lambda **kw: kw)
     def fragment(self, **kwargs): return lambda fn: fn
+    def cache_data(self, **kwargs):
+        def decorate(fn):
+            fn.clear = lambda: None
+            return fn
+        return decorate
     def set_page_config(self, **kwargs): self.page_config = kwargs
     def markdown(self, *args, **kwargs): pass
     def error(self, msg): self.messages.append(("error",msg))
@@ -150,6 +155,10 @@ def test_dashboard_complete_read_only_flow_with_charts_and_csv_exports(tmp_path,
     app.main()
     assert st.plots[0].layout.yaxis.autorange is True
     assert list(st.plots[0].data[0].y) == [100.99, 100.99]
+    # A browser session opened before an administrative reset must recover its selection.
+    st.session_state[f"chosen_products_{query['id']}"] = [9999999999]
+    app.main()
+    assert st.session_state[f"chosen_products_{query['id']}"] == [12, 13]
 
 
 def test_partial_snapshot_is_selectable_exported_and_marked(tmp_path, monkeypatch):

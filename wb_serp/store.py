@@ -405,8 +405,8 @@ class Store:
         with self.connect() as db:
             db.execute('BEGIN')
             totals = dict(db.execute("""SELECT
-                (SELECT count(*) FROM observations o JOIN collection_runs r ON r.id=o.run_id
-                    WHERE r.status IN ('success','partial')) AS observations,
+                (SELECT COALESCE(sum(observed_count),0) FROM collection_runs
+                    WHERE status IN ('success','partial')) AS observations,
                 (SELECT count(DISTINCT nm_id) FROM product_catalog) AS products,
                 (SELECT count(*) FROM collection_runs WHERE status IN ('success','partial')
                     AND observed_count>0) AS snapshots,

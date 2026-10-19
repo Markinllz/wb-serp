@@ -119,6 +119,15 @@ class BrowserTransport(httpx.BaseTransport):
         self.metrics['refreshes'] += 1
         return self._warmup()
 
+    def _verification_failure(self, request: httpx.Request) -> httpx.Response:
+        status = self.diagnostics.get('catalog_status') or self.diagnostics.get('navigation_status')
+        if status in (401, 403, 429, 498) or self.diagnostics.get('challenge_visible'):
+            return httpx.Response(status if status in (401, 403, 429, 498) else 498,
+                                  headers={'server': 'browser-session'},
+                                  content=b'WB browser access check failed', request=request)
+        raise httpx.ReadTimeout('WB search page did not finish loading; access denial was not confirmed',
+                                request=request)
+
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         validate_browser_url(str(request.url))
         if request.method != 'GET':
@@ -129,8 +138,7 @@ class BrowserTransport(httpx.BaseTransport):
                 or (request.url.params.get('page', '1') == '1' and self._card_snapshot_open)):
             self._ready = False
         if not self._ready and not self._warmup():
-            return httpx.Response(498, headers={'server': 'browser-session'},
-                                  content=b'Browser site verification did not finish', request=request)
+            return self._verification_failure(request)
         from playwright.sync_api import Error
         if request.url.params.get('page', '1') == '1':
             self._card_prices = {}

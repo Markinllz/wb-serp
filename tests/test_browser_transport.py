@@ -55,13 +55,25 @@ def test_decoded_browser_body_and_headers(monkeypatch, tmp_path):
     assert transport.metrics['fetches'] == 1
 
 
-def test_unresolved_browser_check_is_explicit_498(monkeypatch, tmp_path):
+def test_unresolved_browser_check_is_retryable_timeout(monkeypatch, tmp_path):
     transport = BrowserTransport(profile_path=tmp_path)
     monkeypatch.setattr(transport, '_start', lambda: None)
     monkeypatch.setattr(transport, '_warmup', lambda: False)
-    response = transport.handle_request(httpx.Request('GET', ENDPOINT))
-    assert response.status_code == 498
+    with pytest.raises(httpx.ReadTimeout, match='denial was not confirmed'):
+        transport.handle_request(httpx.Request('GET', ENDPOINT))
     assert transport.metrics['fetches'] == 0
+
+
+@pytest.mark.parametrize('diagnostics,status', [
+    ({'navigation_status': 403}, 403), ({'catalog_status': 429}, 429),
+    ({'challenge_visible': True}, 498),
+])
+def test_confirmed_browser_denial_remains_blocked(monkeypatch, tmp_path, diagnostics, status):
+    transport = BrowserTransport(profile_path=tmp_path)
+    transport.diagnostics.update(diagnostics)
+    monkeypatch.setattr(transport, '_start', lambda: None)
+    monkeypatch.setattr(transport, '_warmup', lambda: False)
+    assert transport.handle_request(httpx.Request('GET', ENDPOINT)).status_code == status
 
 
 def test_bootstrap_failure_does_not_restart_site_countdown(monkeypatch, tmp_path):

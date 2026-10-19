@@ -76,8 +76,11 @@ class CdpBrowserTransport(BrowserTransport):
             url = urlsplit(response.url)
             validate_browser_url(url._replace(query='', fragment='').geturl())
             params = dict(parse_qsl(url.query))
-            if (response.status != 200 or params.get('resultset') != 'catalog'
+            if (params.get('resultset') != 'catalog'
                     or params.get('query') != self._current_query):
+                return
+            self.diagnostics['catalog_status'] = response.status
+            if response.status != 200:
                 return
             payload = response.json()
             products = payload.get('products', payload.get('data', {}).get('products'))
@@ -96,15 +99,18 @@ class CdpBrowserTransport(BrowserTransport):
 
     def _warmup(self) -> bool:
         if not self._bootstrap_ready:
+            self._record_verification_failure()
             return False
         from playwright.sync_api import Error
         self.metrics['navigations'] += 1
         self._frontend_ready = False
         self._frontend_destination = None
         self._frontend_pages = {}
+        self.diagnostics.update(navigation_status=None, catalog_status=None, challenge_visible=False)
         try:
             search_page = ORIGIN + '/catalog/0/search.aspx?' + urlencode({'search': self._current_query})
-            self._page.goto(search_page, wait_until='domcontentloaded', timeout=self.timeout * 1000)
+            response = self._page.goto(search_page, wait_until='domcontentloaded', timeout=self.timeout * 1000)
+            self.diagnostics['navigation_status'] = response.status if response else None
             deadline = time.monotonic() + self.timeout
             while not self._frontend_ready and time.monotonic() < deadline:
                 self._page.wait_for_timeout(250)
@@ -117,9 +123,23 @@ class CdpBrowserTransport(BrowserTransport):
                 self._card_snapshot_open = False
         except Error:
             self._ready = False
+        if not self._ready:
+            self._record_verification_failure()
         self.diagnostics.update(search_input_found=self._bootstrap_ready,
                                 frontend_search_verified=self._ready)
         return self._ready
+
+    def _record_verification_failure(self) -> None:
+        from playwright.sync_api import Error
+        try:
+            self.diagnostics['challenge_visible'] = self._page.evaluate('''() =>
+                /подозрительная активность|подтвердите,? что вы не робот|verify you are human/iu
+                .test(document.body?.innerText || '')''')
+        except Error:
+            pass
+        log.warning('WB search not ready: navigation=%s catalog=%s challenge=%s',
+                    self.diagnostics.get('navigation_status'), self.diagnostics.get('catalog_status'),
+                    self.diagnostics.get('challenge_visible'))
 
     def _fetch_frontend_page(self, request: httpx.Request) -> dict:
         """Use the JSON actually loaded by the rendered search, not a parallel API replay."""
